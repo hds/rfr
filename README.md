@@ -1,0 +1,3 @@
+# rfr
+
+Rust Flight Recorder.
