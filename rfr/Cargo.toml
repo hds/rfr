@@ -1,0 +1,15 @@
+[package]
+name = "rfr"
+version = "0.0.0"
+license = "MIT"
+edition = "2021"
+authors = ["Hayden Stainsby <hds@caffeineconcepts.com>"]
+readme = "README.md"
+description = """
+A flight recorder for Rust.
+"""
+categories = ["development-tools::debugging"]
+keywords = ["tracing", "debugging"]
+
+
+[dependencies]
