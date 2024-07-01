@@ -1,6 +1,6 @@
 use std::env;
 
-use rfr_subscriber::rec::from_file;
+use rfr::rec::from_file;
 
 fn main() {
     let mut args = env::args();

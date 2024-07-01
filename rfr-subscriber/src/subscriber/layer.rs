@@ -8,7 +8,7 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use crate::rec::{self, Writer};
+use rfr::rec::{self, Writer};
 
 #[derive(Clone)]
 enum TraceKind {

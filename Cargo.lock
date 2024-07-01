@@ -295,14 +295,17 @@ dependencies = [
 
 [[package]]
 name = "rfr"
-version = "0.0.0"
+version = "0.0.1"
+dependencies = [
+ "postcard",
+ "serde",
+]
 
 [[package]]
 name = "rfr-subscriber"
 version = "0.1.0"
 dependencies = [
- "postcard",
- "serde",
+ "rfr",
  "tokio",
  "tracing",
  "tracing-subscriber",
