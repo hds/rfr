@@ -126,7 +126,7 @@ pub enum Event {
     WakerOp(WakerAction),
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct TaskId(u64);
 
 impl From<u64> for TaskId {
@@ -141,7 +141,7 @@ impl TaskId {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TaskKind {
     Task,
     Local,
@@ -150,7 +150,7 @@ pub enum TaskKind {
     Other(String),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Task {
     pub task_id: TaskId,
     pub task_name: String,
