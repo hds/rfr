@@ -1,4 +1,8 @@
-use std::{fmt, fs, io::SeekFrom, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    fmt, fs,
+    io::SeekFrom,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -83,10 +87,39 @@ impl FormatVersion {
     }
 }
 
+/// A timestamp measured from the [`UNIX_EPOCH`].
+///
+/// This timestamp is absolute as it has an external reference.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AbsTimestamp {
+    /// Whole seconds component of the timestamp, measured from the [`UNIX_EPOCH`].
+    pub secs: u64,
+    /// Sub-second component of the timestamp, measured in microseconds.
+    pub subsec_micros: u32,
+}
+
+/// A timestamp measured from the beginning of the [recording window].
+///
+/// This timestamp is relative to a specific window.
+///
+/// [recording window]: http://need-docs-on-the-recording-window.net/
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WinTimestamp {
+    /// The total number of microseconds since the beginning of the window.
+    pub micros: u64,
+}
+
+impl WinTimestamp {
+    pub const ZERO: Self = Self { micros: 0 };
+
+    pub fn as_micros(&self) -> u64 {
+        self.micros
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Meta {
-    pub timestamp_s: u64,
-    pub timestamp_subsec_us: u32,
+    pub timestamp: AbsTimestamp,
 }
 
 impl Meta {
@@ -98,8 +131,10 @@ impl Meta {
 impl From<Duration> for Meta {
     fn from(value: Duration) -> Self {
         Self {
-            timestamp_s: value.as_secs(),
-            timestamp_subsec_us: value.subsec_micros(),
+            timestamp: AbsTimestamp {
+                secs: value.as_secs(),
+                subsec_micros: value.subsec_micros(),
+            },
         }
     }
 }

@@ -1,7 +1,12 @@
-use std::{collections::BTreeMap, fmt, fs, io::Write, time::Duration};
+use std::{cmp::Ordering, fs, io::Write};
 
 use clap::Parser;
+use collect::SpawnEventKind;
 use rfr::rec::{self, from_file};
+
+use crate::collect::{create_task_rows, WinTimeHandle};
+
+mod collect;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -10,91 +15,16 @@ struct Args {
     recording_file: String,
 
     #[arg(short, long)]
-    output_file: String,
-}
-
-fn time_from_rec_meta(meta: &rec::Meta) -> Duration {
-    Duration::new(meta.timestamp_s, meta.timestamp_subsec_us * 1000)
-}
-
-struct TaskSection {
-    length: u64,
-    state: TaskState,
-    debug: String,
-}
-
-enum TaskState {
-    Active,
-    Idle,
-    ActiveSchedueld,
-    IdleScheduled,
-}
-
-impl fmt::Display for TaskState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::Active => "active",
-                Self::Idle => "idle",
-                Self::ActiveSchedueld => "active",
-                Self::IdleScheduled => "scheduled",
-            }
-        )
-    }
-}
-
-struct TaskSpawn {
-    time: u64,
-    spawned_by: Option<rec::TaskId>,
-}
-
-enum WakerOp {
-    Wake { woken_by: Option<rec::TaskId> },
-    WakeByRef { woken_by: Option<rec::TaskId> },
-    Clone,
-    Drop,
-}
-
-struct TaskWake {
-    time: u64,
-    op: WakerOp,
-}
-
-struct TaskRow {
-    task: rec::Task,
-    sections: Vec<TaskSection>,
-    spawn: Option<TaskSpawn>,
-    wakings: Vec<WakerOp>,
-}
-
-impl TaskRow {
-    fn new(task: rec::Task) -> Self {
-        TaskRow {
-            task,
-            sections: Vec::new(),
-            spawn: None,
-            wakings: Vec::new(),
-        }
-    }
-
-    fn task_start_time(&self) -> Option<u64> {
-        self.spawn.as_ref().map(|s| s.time)
-    }
-
-    fn task_duration(&self) -> u64 {
-        self.sections.iter().map(|section| section.length).sum()
-    }
+    name: String,
 }
 
 fn main() {
     let args = Args::parse();
 
     let records = from_file(args.recording_file);
-    let mut out_fh = fs::File::create(args.output_file).unwrap();
+    let mut out_fh = fs::File::create(format!("{name}.html", name = &args.name)).unwrap();
 
-    let mut tasks = BTreeMap::new();
+    //let mut tasks = BTreeMap::new();
 
     let Some(first) = records.first() else {
         println!("There are no records in the recording file.");
@@ -102,123 +32,31 @@ fn main() {
     };
     let last = records.last().unwrap();
 
-    let start_time = time_from_rec_meta(&first.meta);
-    let end_time = time_from_rec_meta(&last.meta);
-    let total_time = end_time.saturating_sub(start_time).as_micros();
-    debug_assert!(total_time < u64::MAX as u128, "recording time spans more than u64::MAX microseconds, which is more than 500 thousand years");
-    let total_time = total_time as u64 + 117; // task details div width
+    let win_time_handle = WinTimeHandle::new(first.meta.timestamp.clone());
+    let end_time = win_time_handle.window_time(&last.meta.timestamp.clone());
 
-    let scaling_factor = 100_u64;
+    let scaling_factor = 1_u64;
     let chart_time = |t: u64| t / scaling_factor;
 
-    for record in &records {
-        let timestamp = time_from_rec_meta(&record.meta);
-        let relative_time = timestamp.saturating_sub(start_time);
-        let from_start = timestamp.saturating_sub(start_time).as_micros() as u64;
+    let rows = create_task_rows(records);
 
-        match &record.event {
-            rec::Event::Task(task) => {
-                tasks.insert(task.task_id, TaskRow::new(task.clone()));
-            }
-            rec::Event::NewTask { id } => {
-                tasks.entry(*id).and_modify(|task_row| {
-                    debug_assert!(
-                        task_row.spawn.is_none(),
-                        "new task event received for task that already has a spawn marker"
-                    );
-                    task_row.spawn = Some(TaskSpawn {
-                        time: from_start,
-                        spawned_by: None,
-                    });
-                });
-            }
-            rec::Event::TaskPollStart { id } => {
-                tasks.entry(*id).and_modify(|task_row| {
-                    let Some(task_start_time) = task_row.spawn.as_ref().map(|s| s.time) else {
-                        return;
-                    };
-                    let time_since_task_start = from_start.saturating_sub(task_start_time);
-                    let last_section_duration =
-                        time_since_task_start.saturating_sub(task_row.task_duration());
-                    if let Some(last_section) = task_row.sections.last_mut() {
-                        last_section.length = last_section_duration;
-                    } else {
-                        task_row.sections.push(TaskSection {
-                            length: last_section_duration,
-                            state: TaskState::Idle,
-                            debug: "implicit".into(),
-                        });
-                    }
-                    task_row.sections.push(TaskSection {
-                        length: 0,
-                        state: TaskState::Active,
-                        debug: format!("{relative_time:?} -> {from_start}"),
-                    });
-                });
-            }
-            rec::Event::TaskPollEnd { id } => {
-                tasks.entry(*id).and_modify(|task_row| {
-                    let Some(task_start_time) = task_row.spawn.as_ref().map(|s| s.time) else {
-                        return;
-                    };
-                    let time_since_task_start = from_start.saturating_sub(task_start_time);
-                    let last_section_duration =
-                        time_since_task_start.saturating_sub(task_row.task_duration());
-                    if let Some(last_section) = task_row.sections.last_mut() {
-                        last_section.length = last_section_duration;
-                    } else {
-                        task_row.sections.push(TaskSection {
-                            length: last_section_duration,
-                            state: TaskState::Active,
-                            debug: "implicit".into(),
-                        });
-                    }
-                    task_row.sections.push(TaskSection {
-                        length: 0,
-                        state: TaskState::Idle,
-                        debug: format!("{relative_time:?} -> {from_start}"),
-                    });
-                });
-            }
-            rec::Event::TaskDrop { id } => {
-                tasks.entry(*id).and_modify(|task_row| {
-                    let Some(task_start_time) = task_row.spawn.as_ref().map(|s| s.time) else {
-                        return;
-                    };
-                    if task_row.sections.len() >= 3 {
-                        // The last poll start + poll end pair represent a "fake poll". There is
-                        // no poll occuring, but the `runtime.spawn` span is entered and exited.
-                        task_row.sections.truncate(task_row.sections.len() - 2);
-                    }
-
-                    let time_since_task_start = from_start.saturating_sub(task_start_time);
-                    let last_section_duration =
-                        time_since_task_start.saturating_sub(task_row.task_duration());
-
-                    if let Some(last_section) = task_row.sections.last_mut() {
-                        last_section.length = last_section_duration as u64;
-                    } else {
-                        task_row.sections.push(TaskSection {
-                            length: last_section_duration,
-                            state: TaskState::Idle,
-                            debug: "implicit".into(),
-                        });
-                    }
-                });
-            }
-            _ => {} //            rec::Event::WakerOp(_) => todo!(),
-        }
-    }
-
-    write!(out_fh, "{}", header()).unwrap();
-    write!(out_fh, "{}", canvas_start(chart_time(total_time) + 150)).unwrap();
-    for task_row in tasks.values() {
-        let name = match task_row.task.task_kind {
+    write!(out_fh, "{}", header(args.name)).unwrap();
+    // 117: task_details div width
+    // 150: some buffer because we're scaling down the time in a hacky way.
+    write!(
+        out_fh,
+        "{}",
+        canvas_start(chart_time(end_time.as_micros()) + 117 + 150)
+    )
+    .unwrap();
+    for row in rows {
+        let name = match row.task.task_kind {
             rec::TaskKind::BlockOn => "<em>block_on</em>",
-            _ => task_row.task.task_name.as_str(),
+            _ => row.task.task_name.as_str(),
         };
 
-        write!(out_fh,
+        write!(
+            out_fh,
             r#"                    <div class="task">
                         <div class="task-details">
                             <div class="name">{name}</div>
@@ -226,45 +64,99 @@ fn main() {
                         </div>
                         <div class="task-timeline">
 "#,
-            task_id = task_row.task.task_id.as_u64(),
-        ).unwrap();
-        let mut sections = task_row.sections.iter();
-        if let Some(start_time) = task_row.task_start_time() {
-            if let Some(first_section) = sections.next() {
+            task_id = row.task.task_id.as_u64(),
+        )
+        .unwrap();
+        let mut sections = row.sections.iter();
+        if let Some(first_section) = sections.next() {
+            write!(out_fh,
+                r#"                            <div title="{state}" class="task-state {state}" style="margin-left: {start_time}px; width: {length}px; max-width: {length}px;"></div>"#,
+                state = first_section.state,
+                start_time = chart_time(row.start_time.as_micros()),
+                length = chart_time(first_section.duration),
+            ).unwrap();
+            for section in sections {
                 write!(out_fh,
-                    r#"                            <div class="task-state {state}" debug="{debug}" style="margin-left: {start_time}px; width: {length}px; max-width: {length}px;"></div>"#,
-                    state = first_section.state,
-                    start_time = chart_time(start_time),
-                    length = chart_time(first_section.length),
-                    debug = first_section.debug
+                    r#"<div title="{state}" class="task-state {state}" style="width: {length}px; max-width: {length}px;"></div>"#,
+                    state = section.state,
+                    length = chart_time(section.duration),
                 ).unwrap();
-                for section in sections {
-                    write!(out_fh,
-                        r#"<div class="task-state {state}" debug="{debug}" style="width: {length}px; max-width: {length}px;"></div>"#,
-                        state = section.state,
-                        length = chart_time(section.length),
-                        debug = section.debug
-                    ).unwrap();
-                }
-                writeln!(out_fh).unwrap();
             }
+            writeln!(out_fh).unwrap();
         }
 
-        writeln!(out_fh,
+        if let Some(spawn) = row.spawn {
+            let by_config = match &spawn.kind {
+                SpawnEventKind::Spawn { by: Some(by_index) } if by_index > &row.index => {
+                    Some((by_index.as_inner() - row.index.as_inner(), "up", "-"))
+                }
+                SpawnEventKind::Spawn { by: Some(by_index) } if by_index < &row.index => {
+                    Some((row.index.as_inner() - by_index.as_inner(), "down", "+"))
+                }
+                SpawnEventKind::Spawn { by: Some(_) } => None,
+                _ => None,
+            };
+            write!(out_fh,
+                   r#"                            <div class="spawn" style="left: {time}px;">{by}<div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>"#,
+           time = chart_time((row.start_time.clone() + spawn.ts).as_micros()),
+           by = match by_config {
+                Some((index_diff, direction, pm,)) => format!(r#"<div class="spawn-line {direction}" style="height: calc(20px + (42px * {index_diff}) + (4px * {group_diff}) {pm} 5px);"><div class="spawn-from"></div></div>"#, group_diff = 0),
+                None => "".into(),
+           }
+           ).unwrap();
+        }
+
+        for waking in row.wakings {
+            let by_index = match waking.kind {
+                collect::WakeEventKind::Wake { by } | collect::WakeEventKind::WakeByRef { by } => {
+                    by
+                }
+                _ => None,
+            };
+            let by_config = by_index.and_then(|by_index| match by_index.cmp(&row.index) {
+                Ordering::Greater => Some((by_index.as_inner() - row.index.as_inner(), "up", "-")),
+                Ordering::Less => Some((row.index.as_inner() - by_index.as_inner(), "down", "+")),
+                Ordering::Equal => None,
+            });
+
+            write!(out_fh,
+                   r#"                            <div class="waker" style="left: {time}px;"><div class="waker-line"></div>{by}<div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">{label}</div></div></div>"#,
+               time = chart_time((row.start_time.clone() + waking.ts).as_micros()),
+               label = waking.kind,
+                   by = match by_config {
+                        Some((index_diff, direction, pm,)) => format!(r#"<div class="waker-line {direction}" style="height: calc(20px + (42px * {index_diff}) + (4px * {group_diff}) {pm} 5px);"><div class="waker-from"></div></div>"#, group_diff = 0),
+                        None => "".into(),
+                   },
+            ).unwrap();
+        }
+
+        writeln!(
+            out_fh,
             r#"                        </div>
                     </div>
 "#
-        ).unwrap();
+        )
+        .unwrap();
     }
     write!(out_fh, "{}", canvas_end()).unwrap();
     write!(out_fh, "{}", footer()).unwrap();
 }
 
-fn header() -> &'static str {
-    r#"<!DOCTYPE html>
+fn header(name: String) -> String {
+    format!(
+        r#"<!DOCTYPE html>
     <head>
-        <title>rfr spawn example</title>
-        <style>
+        <title>rfr: {name}</title>
+{style}
+    </head>
+    <body>
+"#,
+        style = style()
+    )
+}
+
+fn style() -> &'static str {
+    r#"        <style>
             body {
                 font-family: sans-serif;
             }
@@ -328,7 +220,7 @@ fn header() -> &'static str {
             div.task-timeline {
                 float: left;
                 height: 20px;
-                /* 10px + 2 x 16px = 42px = height of task-details including padding */
+                /* 20px + 2 x 11px = 42px = height of task-details including padding */
                 padding-top: 11px; 
                 padding-bottom: 11px;
                 position: relative;
@@ -358,6 +250,12 @@ fn header() -> &'static str {
                 height: 16px;
                 width: 34px;
                 padding-top: 14px;
+
+                z-index: 5;
+            }
+
+            div.waker:hover, div.spawn:hover {
+                z-index: 10;
             }
 
             div.waker-line, div.spawn-line {
@@ -447,6 +345,30 @@ fn header() -> &'static str {
                 background-color: #30ba69;
             }
 
+            div.waker-border, div.spawn-border {
+                position: absolute;
+                width: 32px;
+                height: 15px;
+                border-width: 1px;
+                border-style: solid;
+            }
+
+            div.waker-border {
+                border-color: #b998d9;
+            }
+
+            div.spawn-border {
+                border-color: #30ba69;
+            }
+
+            div.waker:hover div.waker-border {
+                border-color: #9343dd;
+            }
+
+            div.spawn:hover div.spawn-border {
+                border-color: #09e364;
+            }
+
             div.waker-marker, div.waker-label, div.spawn-marker, div.spawn-label {
                 display: inline-block;
                 vertical-align: middle
@@ -474,8 +396,6 @@ fn header() -> &'static str {
             }
 
         </style>
-    </head>
-    <body>
 "#
 }
 
