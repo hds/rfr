@@ -65,7 +65,7 @@
             div.task-timeline {
                 float: left;
                 height: 20px;
-                /* 10px + 2 x 16px = 42px = height of task-details including padding */
+                /* 20px + 2 x 11px = 42px = height of task-details including padding */
                 padding-top: 11px; 
                 padding-bottom: 11px;
                 position: relative;
@@ -95,6 +95,12 @@
                 height: 16px;
                 width: 34px;
                 padding-top: 14px;
+
+                z-index: 5;
+            }
+
+            div.waker:hover, div.spawn:hover {
+                z-index: 10;
             }
 
             div.waker-line, div.spawn-line {
@@ -184,6 +190,30 @@
                 background-color: #30ba69;
             }
 
+            div.waker-border, div.spawn-border {
+                position: absolute;
+                width: 32px;
+                height: 15px;
+                border-width: 1px;
+                border-style: solid;
+            }
+
+            div.waker-border {
+                border-color: #b998d9;
+            }
+
+            div.spawn-border {
+                border-color: #30ba69;
+            }
+
+            div.waker:hover div.waker-border {
+                border-color: #9343dd;
+            }
+
+            div.spawn:hover div.spawn-border {
+                border-color: #09e364;
+            }
+
             div.waker-marker, div.waker-label, div.spawn-marker, div.spawn-label {
                 display: inline-block;
                 vertical-align: middle
@@ -224,8 +254,8 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 50px; width: 20px; max-width: 20px;"></div>
-                            <div class="spawn" style="left: 50px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
-                            <div class="waker" style="left: 56px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">D</div></div></div>
+                            <div class="spawn" style="left: 50px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="waker" style="left: 56px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">D</div></div></div>
                         </div>
                     </div>
                     <div class="task">
@@ -235,9 +265,9 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 350px; width: 200px; max-width: 200px;"></div><div class="task-state idle" style="width: 100px; max-width: 100px;"></div><div class="task-state scheduled" style="width: 30px; max-width: 30px;"></div><div class="task-state active" style="width: 120px; max-width: 120px;"></div>
-                            <div class="spawn" style="left: 350px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
-                            <div class="waker" style="left: 540px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">C</div></div></div>
-                            <div class="waker" style="left: 650px;"><div class="waker-line up" style="height: calc(20px + (42px * 1) - 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
+                            <div class="spawn" style="left: 350px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="waker" style="left: 540px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">C</div></div></div>
+                            <div class="waker" style="left: 650px;"><div class="waker-line up" style="height: calc(20px + (42px * 1) - 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
                         </div>
                     </div>
                     <div class="task">
@@ -247,9 +277,11 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 500px; width: 200px; max-width: 200px;"></div><div class="task-state idle" style="width: 100px; max-width: 100px;"></div><div class="task-state scheduled" style="width: 30px; max-width: 30px;"></div><div class="task-state active" style="width: 120px; max-width: 120px;"></div>
-                            <div class="spawn" style="left: 500px;"><div class="spawn-line down" style="height: calc(20px + (42px * 1) + 5px);"><div class="spawn-from"></div></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
-                            <div class="waker" style="left: 540px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">C</div></div></div>
-                            <div class="waker" style="left: 800px;"><div class="waker-line down" style="height: calc(20px + (42px * 1) + 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
+                            <div class="spawn" style="left: 500px;"><div class="spawn-line down" style="height: calc(20px + (42px * 1) + 5px);"><div class="spawn-from"></div></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="waker" style="left: 540px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">C</div></div></div>
+                            <div class="waker" style="left: 800px;"><div class="waker-line down" style="height: calc(20px + (42px * 1) + 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
+                            <div class="waker" style="left: 850px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">C</div></div></div>
+                            <div class="waker" style="left: 860px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">D</div></div></div>
                         </div>
                     </div>
                     <div class="task">
@@ -259,9 +291,9 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 900px; width: 100px; max-width: 100px;"></div><div class="task-state scheduled" style="width: 30px; max-width: 30px;"></div><div class="task-state active" style="width: 700px; max-width: 700px;"></div><div class="task-state scheduled" style="width: 30px; max-width: 30px;"></div><div class="task-state active" style="width: 600px; max-width: 600px;"></div>
-                            <div class="spawn" style="left: 900px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
-                            <div class="waker" style="left: 990px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">*W</div></div></div>
-                            <div class="waker" style="left: 1500px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">*W</div></div></div>
+                            <div class="spawn" style="left: 900px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="waker" style="left: 990px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">*W</div></div></div>
+                            <div class="waker" style="left: 1500px;"><div class="waker-line"></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">*W</div></div></div>
                         </div>
                     </div>
                 </div>
@@ -276,7 +308,7 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 150px; width: 40px; max-width: 40px;"></div>
-                            <div class="spawn" style="left: 150px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="spawn" style="left: 150px;"><div class="spawn-line"></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
                         </div>
                     </div>
                     <div class="task">
@@ -286,8 +318,8 @@
                         </div>
                         <div class="task-timeline">
                             <div class="task-state active" style="margin-left: 2000px; width: 200px; max-width: 200px;"></div><div class="task-state idle" style="width: 100px; max-width: 100px;"></div><div class="task-state scheduled" style="width: 30px; max-width: 30px;"></div><div class="task-state active" style="width: 120px; max-width: 120px;"></div>
-                            <div class="spawn" style="left: 2000px;"><div class="spawn-line down" style="height: calc(20px + (42px * 2) + (4px * 1) + 5px);"><div class="spawn-from"></div></div><div class="spawn-inner"><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
-                            <div class="waker" style="left: 2300px;"><div class="waker-line down" style="height: calc(20px + (42px * 2) + (4px * 1) + 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
+                            <div class="spawn" style="left: 2000px;"><div class="spawn-line down" style="height: calc(20px + (42px * 2) + (4px * 1) + 5px);"><div class="spawn-from"></div></div><div class="spawn-inner"><div class="spawn-border"></div><div class="spawn-marker"></div><div class="spawn-label">S</div></div></div>
+                            <div class="waker" style="left: 2300px;"><div class="waker-line down" style="height: calc(20px + (42px * 2) + (4px * 1) + 5px);"><div class="waker-from"></div></div><div class="waker-inner"><div class="waker-border"></div><div class="waker-marker"></div><div class="waker-label">W</div></div></div>
                         </div>
                     </div>
                 </div>

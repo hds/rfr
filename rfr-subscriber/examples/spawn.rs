@@ -15,9 +15,9 @@ fn main() {
     rt.block_on(async {
         let jh = spawn_named("outer", async {
             spawn_named("inner-awesome", async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_micros(50)).await;
             });
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_micros(100)).await;
         });
 
         _ = jh.await;
