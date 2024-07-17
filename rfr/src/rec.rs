@@ -1,6 +1,6 @@
 use std::{
     fmt, fs,
-    io::SeekFrom,
+    io::{self, BufWriter, SeekFrom},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -42,7 +42,7 @@ impl FormatVersion {
             name: FormatName::Rfr,
             major: 0,
             minor: 0,
-            patch: 1,
+            patch: 2,
         }
     }
 
@@ -210,28 +210,43 @@ pub struct WakerAction {
     pub context: Option<TaskId>,
 }
 
-#[derive(Debug, Default)]
-pub struct Writer {
-    buffer: Vec<u8>,
-    pub event_count: usize,
+#[derive(Debug)]
+pub struct StreamWriter<W>
+where
+    W: std::io::Write,
+{
+    inner: BufWriter<W>,
+    event_count: usize,
 }
 
-impl Writer {
+impl<W> StreamWriter<W>
+where
+    W: std::io::Write,
+{
+    pub fn new(inner: W) -> Self {
+        let mut buf_writer = BufWriter::new(inner);
+
+        let version = FormatVersion::current_software_version();
+        postcard::to_io(&version, &mut buf_writer).unwrap();
+
+        Self {
+            inner: buf_writer,
+            event_count: 0,
+        }
+    }
+
     pub fn write_record(&mut self, record: Record) {
-        postcard::to_io(&record, &mut self.buffer).unwrap();
+        postcard::to_io(&record, &mut self.inner).unwrap();
         self.event_count += 1;
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
-        self.buffer.as_slice()
+    pub fn event_count(&self) -> usize {
+        self.event_count
     }
 
-    pub fn write_to_file(&mut self, mut file: &fs::File) {
-        let version = FormatVersion::current_software_version();
-        postcard::to_io(&version, &mut file).unwrap();
-        postcard::to_io(&self.event_count, &mut file).unwrap();
+    pub fn flush(&mut self) -> io::Result<()> {
         use std::io::Write;
-        file.write_all(self.buffer.as_slice()).unwrap();
+        self.inner.flush()
     }
 }
 
@@ -242,9 +257,17 @@ pub fn from_file(filename: String) -> Vec<Record> {
     //let buffer: &mut [u8] = &mut buffer_vec;
     let mut file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
 
+    let Ok(mut end_pos) = file_buffer.0.seek(SeekFrom::End(0)) else {
+        println!("cannot get file length");
+        return Vec::new();
+    };
+    let Ok(_) = file_buffer.0.seek(SeekFrom::Start(0)) else {
+        println!("cannot seek back to start of file");
+        return Vec::new();
+    };
+
     let result = postcard::from_io(file_buffer).unwrap();
-    let version: FormatVersion = result.0;
-    file_buffer = result.1;
+    let (version, _): (FormatVersion, _) = result;
 
     if !FormatVersion::can_read_version(&version) {
         panic!(
@@ -253,20 +276,36 @@ pub fn from_file(filename: String) -> Vec<Record> {
         );
     }
 
-    let result = postcard::from_io(file_buffer).unwrap();
-    let count: usize = result.0;
-    _ = result.1;
-
     let mut records = Vec::new();
 
     use std::io::Seek;
     file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
-    'event: for idx in 0..count {
+    'event: for idx in 0_usize.. {
         let result = loop {
             let Ok(file_pos) = file_buffer.0.stream_position() else {
                 println!("at {idx} cannot get file position");
                 break 'event;
             };
+
+            if file_pos >= end_pos {
+                let Ok(new_end_pos) = file_buffer.0.seek(SeekFrom::End(0)) else {
+                    println!("at {idx} cannot get file length");
+                    break 'event;
+                };
+                if new_end_pos <= end_pos {
+                    break 'event;
+                }
+
+                end_pos = new_end_pos;
+                let Ok(_) = file_buffer.0.seek(SeekFrom::Start(0)) else {
+                    println!("at {idx} cannot seek back to previous file position");
+                    break 'event;
+                };
+                // Start loop from the beginning, even if this means we need to get the stream
+                // position again.
+                continue;
+            }
+
             break match postcard::from_io(file_buffer) {
                 Ok(result) => result,
                 Err(postcard::Error::DeserializeUnexpectedEnd) => {

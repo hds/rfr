@@ -1,4 +1,8 @@
-use std::{collections::HashMap, error, fmt, fs, io::Write, sync::Mutex};
+use std::{
+    collections::HashMap,
+    error, fmt, fs,
+    sync::{Arc, Mutex},
+};
 
 use tracing::{
     field::{Field, Visit},
@@ -8,7 +12,7 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use rfr::rec::{self, Writer};
+use rfr::rec::{self, StreamWriter};
 
 #[derive(Clone)]
 enum TraceKind {
@@ -103,32 +107,38 @@ impl From<&Metadata<'_>> for CallsiteId {
 }
 
 pub struct RfrLayer {
-    file_prefix: String,
-    current_file: Option<Mutex<fs::File>>,
-    writer: Mutex<Writer>,
+    writer: Arc<Mutex<StreamWriter<fs::File>>>,
     callsite_cache: Mutex<HashMap<CallsiteId, TraceKind>>,
 }
 
-impl Default for RfrLayer {
-    fn default() -> Self {
+impl RfrLayer {
+    pub fn new(file_prefix: &str) -> Self {
+        let filename = format!("{prefix}-stream.rfr", prefix = file_prefix);
+
+        let file = fs::File::create(filename).unwrap();
+        let writer = Arc::new(Mutex::new(StreamWriter::new(file)));
+
         Self {
-            file_prefix: "./recording-".into(),
-            current_file: Default::default(),
-            writer: Mutex::new(Writer::default()),
+            writer,
             callsite_cache: Default::default(),
+        }
+    }
+
+    pub fn flusher(&self) -> Flusher {
+        Flusher {
+            writer: Arc::clone(&self.writer),
         }
     }
 }
 
-impl RfrLayer {
-    pub fn new() -> Self {
-        let mut layer = Self::default();
-        let filename = format!("{prefix}0", prefix = layer.file_prefix);
+pub struct Flusher {
+    writer: Arc<Mutex<StreamWriter<fs::File>>>,
+}
 
-        let file = fs::File::create(filename).unwrap();
-        layer.current_file = Some(Mutex::new(file));
-
-        layer
+impl Flusher {
+    pub fn flush(&self) -> std::io::Result<()> {
+        let mut guard = self.writer.lock().expect("poisoned");
+        guard.flush()
     }
 }
 
@@ -188,10 +198,6 @@ where
                 if extensions.get_mut::<TaskId>().is_none() {
                     extensions.insert(spawn.task_id);
                 }
-                if let Some(file) = &self.current_file {
-                    let mut file = file.lock().expect("current file poisoned");
-                    writeln!(file, "  new {spawn:?}").expect("write to file failed");
-                }
                 {
                     let mut guard = self.writer.lock().unwrap();
                     let task_id = rec::TaskId::from(spawn.task_id.0);
@@ -210,12 +216,8 @@ where
                     });
                     let new_event = rec::Event::NewTask { id: task_id };
 
-                    println!("{idx}: {task_event:?}", idx = guard.event_count);
                     (*guard).write_record(rec::Record::new(rec_meta.clone(), task_event));
-                    println!("{idx}: {new_event:?}", idx = guard.event_count);
                     (*guard).write_record(rec::Record::new(rec_meta, new_event));
-                    let file = fs::File::create(format!("{}0.rfr", self.file_prefix)).unwrap();
-                    (*guard).write_to_file(&file);
                 }
             }
             _ => {
@@ -253,10 +255,6 @@ where
                 let context = get_context_task_id(&ctx);
 
                 let waker = WakerEvent::new(op, task_id, context, callsite);
-                if let Some(file) = &self.current_file {
-                    let mut file = file.lock().expect("current file poisoned");
-                    writeln!(file, "  new {waker:?}").expect("write to file failed");
-                }
                 {
                     let mut guard = self.writer.lock().unwrap();
                     let waker_action = rec::Event::WakerOp(rec::WakerAction {
@@ -270,10 +268,7 @@ where
                         context: waker.context.map(|task_id| rec::TaskId::from(task_id.0)),
                     });
 
-                    println!("{idx}: {waker_action:?}", idx = guard.event_count);
                     (*guard).write_record(rec::Record::new(rec_meta, waker_action));
-                    let file = fs::File::create(format!("{}0.rfr", self.file_prefix)).unwrap();
-                    (*guard).write_to_file(&file);
                 }
             }
             _ => {
@@ -288,19 +283,12 @@ where
         let extensions = span.extensions();
         if let Some(task_id) = extensions.get::<TaskId>() {
             // This is a runtime.spawn span
-            if let Some(file) = &self.current_file {
-                let mut file = file.lock().expect("current file poisoned");
-                writeln!(file, "enter {task_id:?}").expect("write to file failed");
-            }
             {
                 let mut guard = self.writer.lock().unwrap();
                 let task_id = rec::TaskId::from(task_id.0);
                 let poll_start = rec::Event::TaskPollStart { id: task_id };
 
-                println!("{idx}: {poll_start:?}", idx = guard.event_count);
                 guard.write_record(rec::Record::new(rec_meta, poll_start));
-                let file = fs::File::create(format!("{}0.rfr", self.file_prefix)).unwrap();
-                guard.write_to_file(&file);
             }
         }
     }
@@ -311,19 +299,12 @@ where
         let extensions = span.extensions();
         if let Some(task_id) = extensions.get::<TaskId>() {
             // This is a runtime.spawn span
-            if let Some(file) = &self.current_file {
-                let mut file = file.lock().expect("current file poisoned");
-                writeln!(file, " exit {task_id:?}").expect("write to file failed");
-            }
             {
                 let mut guard = self.writer.lock().unwrap();
                 let task_id = rec::TaskId::from(task_id.0);
                 let poll_end = rec::Event::TaskPollEnd { id: task_id };
 
-                println!("{idx}: {poll_end:?}", idx = guard.event_count);
                 (*guard).write_record(rec::Record::new(rec_meta, poll_end));
-                let file = fs::File::create(format!("{}0.rfr", self.file_prefix)).unwrap();
-                (*guard).write_to_file(&file);
             }
         }
     }
@@ -336,19 +317,12 @@ where
         let extensions = span.extensions();
         if let Some(task_id) = extensions.get::<TaskId>() {
             // This is a runtime.spawn span
-            if let Some(file) = &self.current_file {
-                let mut file = file.lock().expect("current file poisoned");
-                writeln!(file, "close {task_id:?}").expect("write to file failed");
-            }
             {
                 let mut guard = self.writer.lock().unwrap();
                 let task_id = rec::TaskId::from(task_id.0);
                 let task_drop = rec::Event::TaskDrop { id: task_id };
 
-                println!("{idx}: {task_drop:?}", idx = guard.event_count);
                 (*guard).write_record(rec::Record::new(rec_meta, task_drop));
-                let file = fs::File::create(format!("{}0.rfr", self.file_prefix)).unwrap();
-                (*guard).write_to_file(&file);
             }
         }
     }

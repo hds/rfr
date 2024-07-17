@@ -6,7 +6,8 @@ use rfr_subscriber::RfrLayer;
 use tracing_subscriber::prelude::*;
 
 fn main() {
-    let rfr_layer = RfrLayer::new();
+    let rfr_layer = RfrLayer::new("./recording-ping_pong");
+    let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -30,6 +31,8 @@ fn main() {
             jh.await.unwrap();
         }
     });
+
+    flusher.flush().unwrap();
 }
 
 async fn ping_pong(count: usize, tx: mpsc::Sender<()>, mut rx: mpsc::Receiver<()>) {

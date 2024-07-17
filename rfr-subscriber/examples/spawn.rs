@@ -4,7 +4,8 @@ use rfr_subscriber::RfrLayer;
 use tracing_subscriber::prelude::*;
 
 fn main() {
-    let rfr_layer = RfrLayer::new();
+    let rfr_layer = RfrLayer::new("./recording-spawn");
+    let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -22,6 +23,8 @@ fn main() {
 
         _ = jh.await;
     });
+
+    flusher.flush().unwrap();
 }
 
 #[track_caller]
