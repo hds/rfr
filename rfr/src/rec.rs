@@ -1,89 +1,20 @@
 use std::{
-    fmt, fs,
+    fs,
     io::{self, BufWriter, SeekFrom},
+    str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub enum FormatName {
-    Rfr,
-}
+use crate::{FormatIdentifier, FormatVariant};
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct FormatVersion {
-    pub name: FormatName,
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-}
-
-impl fmt::Display for FormatVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{name}/{major}.{minor}.{patch}",
-            name = match self.name {
-                FormatName::Rfr => "rfr",
-            },
-            major = self.major,
-            minor = self.minor,
-            patch = self.patch,
-        )
-    }
-}
-
-impl FormatVersion {
-    /// Returns the format version implemented by this library.
-    pub fn current_software_version() -> Self {
-        Self {
-            name: FormatName::Rfr,
-            major: 0,
-            minor: 0,
-            patch: 2,
-        }
-    }
-
-    pub fn can_read_version(version: &FormatVersion) -> bool {
-        let current = Self::current_software_version();
-
-        // Completely different format
-        if current.name != version.name {
-            return false;
-        }
-
-        // Different major version
-        if current.major != version.major {
-            return false;
-        }
-
-        // Pre 1.0.0
-        if current.major == 0 {
-            // Different minor in pre-1.0
-            if current.minor != version.minor {
-                return false;
-            }
-
-            // Pre 0.1.0
-            if current.minor == 0 {
-                // Different patch in pre-0.1.0
-                if current.patch != version.patch {
-                    return false;
-                }
-            }
-
-            if current.patch >= version.patch {
-                return true;
-            }
-        }
-
-        if current.minor >= version.minor {
-            return true;
-        }
-
-        false
+fn current_software_version() -> FormatIdentifier {
+    FormatIdentifier {
+        variant: FormatVariant::RfrStreaming,
+        major: 0,
+        minor: 0,
+        patch: 2,
     }
 }
 
@@ -226,7 +157,7 @@ where
     pub fn new(inner: W) -> Self {
         let mut buf_writer = BufWriter::new(inner);
 
-        let version = FormatVersion::current_software_version();
+        let version = format!("{}", current_software_version());
         postcard::to_io(&version, &mut buf_writer).unwrap();
 
         Self {
@@ -267,13 +198,15 @@ pub fn from_file(filename: String) -> Vec<Record> {
     };
 
     let result = postcard::from_io(file_buffer).unwrap();
-    let (version, _): (FormatVersion, _) = result;
+    let (raw_version, _): (String, _) = result;
+    let Ok(version) = FormatIdentifier::from_str(&raw_version) else {
+        // TODO(hds): Really need to return a `Result` from this function.
+        panic!("Cannot parse format identifier from file");
+    };
 
-    if !FormatVersion::can_read_version(&version) {
-        panic!(
-            "Software version {current} cannot read file format version {version}",
-            current = FormatVersion::current_software_version()
-        );
+    let current = current_software_version();
+    if !current.can_read_version(&version) {
+        panic!("Software version {current} cannot read file format version {version}",);
     }
 
     let mut records = Vec::new();
