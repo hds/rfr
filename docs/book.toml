@@ -1,0 +1,6 @@
+[book]
+authors = ["Hayden Stainsby <hds@caffeineconcepts.com>"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Rust Flight Recording Book"
