@@ -29,6 +29,22 @@ pub struct AbsTimestamp {
     pub subsec_micros: u32,
 }
 
+impl From<Duration> for AbsTimestamp {
+    fn from(value: Duration) -> Self {
+        Self {
+            secs: value.as_secs(),
+            subsec_micros: value.subsec_micros(),
+        }
+    }
+}
+
+impl AbsTimestamp {
+    /// Get an `AbsTimestamp` representing the current time.
+    pub fn now() -> Self {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
+    }
+}
+
 /// A timestamp measured from the beginning of the [recording window].
 ///
 /// This timestamp is relative to a specific window.
@@ -55,17 +71,8 @@ pub struct Meta {
 
 impl Meta {
     pub fn now() -> Self {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
-    }
-}
-
-impl From<Duration> for Meta {
-    fn from(value: Duration) -> Self {
         Self {
-            timestamp: AbsTimestamp {
-                secs: value.as_secs(),
-                subsec_micros: value.subsec_micros(),
-            },
+            timestamp: AbsTimestamp::now(),
         }
     }
 }
