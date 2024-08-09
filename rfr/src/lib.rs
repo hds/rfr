@@ -1,3 +1,4 @@
+pub mod chunked;
 mod identifier;
 pub mod rec;
 
