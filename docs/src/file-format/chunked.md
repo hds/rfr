@@ -25,7 +25,7 @@ The layout of the separate files on disk is the following:
 - dir: `<recording-name>.rfr/`
   - file: `meta.rfr`
   - dir: `<year>-<month>/<day>-<hour>/`
-    - file: `chunk-<seconds>.<sub-seconds>.rfr`
+    - file: `chunk-<minute>-<second>.rfr`
 
 The exact split of sub-directories is not overly important, it's there to help humans navigate the
 flight recording structure and to avoid placing too many files in a single directory, which is

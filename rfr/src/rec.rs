@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fs,
     io::{self, BufWriter, SeekFrom},
     str::FromStr,
@@ -21,12 +22,43 @@ fn current_software_version() -> FormatIdentifier {
 /// A timestamp measured from the [`UNIX_EPOCH`].
 ///
 /// This timestamp is absolute as it has an external reference.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct AbsTimestamp {
     /// Whole seconds component of the timestamp, measured from the [`UNIX_EPOCH`].
     pub secs: u64,
     /// Sub-second component of the timestamp, measured in microseconds.
     pub subsec_micros: u32,
+}
+
+impl Ord for AbsTimestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.secs.cmp(&other.secs) {
+            Ordering::Equal => self.subsec_micros.cmp(&other.subsec_micros),
+            other => other,
+        }
+    }
+}
+
+impl PartialOrd for AbsTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl From<Duration> for AbsTimestamp {
+    fn from(value: Duration) -> Self {
+        Self {
+            secs: value.as_secs(),
+            subsec_micros: value.subsec_micros(),
+        }
+    }
+}
+
+impl AbsTimestamp {
+    /// Get an `AbsTimestamp` representing the current time.
+    pub fn now() -> Self {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
+    }
 }
 
 /// A timestamp measured from the beginning of the [recording window].
@@ -55,17 +87,8 @@ pub struct Meta {
 
 impl Meta {
     pub fn now() -> Self {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
-    }
-}
-
-impl From<Duration> for Meta {
-    fn from(value: Duration) -> Self {
         Self {
-            timestamp: AbsTimestamp {
-                secs: value.as_secs(),
-                subsec_micros: value.subsec_micros(),
-            },
+            timestamp: AbsTimestamp::now(),
         }
     }
 }
