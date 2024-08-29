@@ -7,7 +7,10 @@ use std::{
 use tracing::{span, subscriber::Interest, Dispatch, Event, Metadata, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use rfr::rec::{self, StreamWriter};
+use rfr::{
+    common,
+    rec::{self, StreamWriter},
+};
 
 use crate::subscriber::common::{
     get_context_task_id, CallsiteId, EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind,
@@ -108,19 +111,19 @@ where
                 }
                 {
                     let mut guard = self.writer.lock().unwrap();
-                    let task_id = rec::TaskId::from(spawn.task_id.0);
-                    let task_event = rec::Event::Task(rec::Task {
+                    let task_id = common::TaskId::from(spawn.task_id.0);
+                    let task_event = rec::Event::Task(common::Task {
                         task_id,
                         task_name: spawn.task_name,
                         task_kind: match spawn.task_kind {
-                            TaskKind::Task => rec::TaskKind::Task,
-                            TaskKind::Local => rec::TaskKind::Local,
-                            TaskKind::Blocking => rec::TaskKind::Blocking,
-                            TaskKind::BlockOn => rec::TaskKind::BlockOn,
-                            TaskKind::Other(val) => rec::TaskKind::Other(val),
+                            TaskKind::Task => common::TaskKind::Task,
+                            TaskKind::Local => common::TaskKind::Local,
+                            TaskKind::Blocking => common::TaskKind::Blocking,
+                            TaskKind::BlockOn => common::TaskKind::BlockOn,
+                            TaskKind::Other(val) => common::TaskKind::Other(val),
                         },
 
-                        context: spawn.context.map(|task_id| rec::TaskId::from(task_id.0)),
+                        context: spawn.context.map(|task_id| common::TaskId::from(task_id.0)),
                     });
                     let new_event = rec::Event::NewTask { id: task_id };
 
@@ -172,8 +175,8 @@ where
                             WakerOp::Clone => rec::WakerOp::Clone,
                             WakerOp::Drop => rec::WakerOp::Drop,
                         },
-                        task_id: rec::TaskId::from(waker.task_id.0),
-                        context: waker.context.map(|task_id| rec::TaskId::from(task_id.0)),
+                        task_id: common::TaskId::from(waker.task_id.0),
+                        context: waker.context.map(|task_id| common::TaskId::from(task_id.0)),
                     });
 
                     (*guard).write_record(rec::Record::new(rec_meta, waker_action));
@@ -193,7 +196,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = rec::TaskId::from(task_id.0);
+                let task_id = common::TaskId::from(task_id.0);
                 let poll_start = rec::Event::TaskPollStart { id: task_id };
 
                 guard.write_record(rec::Record::new(rec_meta, poll_start));
@@ -209,7 +212,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = rec::TaskId::from(task_id.0);
+                let task_id = common::TaskId::from(task_id.0);
                 let poll_end = rec::Event::TaskPollEnd { id: task_id };
 
                 (*guard).write_record(rec::Record::new(rec_meta, poll_end));
@@ -227,7 +230,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = rec::TaskId::from(task_id.0);
+                let task_id = common::TaskId::from(task_id.0);
                 let task_drop = rec::Event::TaskDrop { id: task_id };
 
                 (*guard).write_record(rec::Record::new(rec_meta, task_drop));

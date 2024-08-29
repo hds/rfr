@@ -2,13 +2,15 @@ use std::{
     cmp::Ordering,
     fs,
     io::{self, BufWriter, SeekFrom},
-    str::FromStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FormatIdentifier, FormatVariant};
+use crate::{
+    common::{Task, TaskId},
+    FormatIdentifier, FormatVariant,
+};
 
 fn current_software_version() -> FormatIdentifier {
     FormatIdentifier {
@@ -115,39 +117,6 @@ pub enum Event {
     WakerOp(WakerAction),
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-pub struct TaskId(u64);
-
-impl From<u64> for TaskId {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl TaskId {
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum TaskKind {
-    Task,
-    Local,
-    Blocking,
-    BlockOn,
-    Other(String),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Task {
-    pub task_id: TaskId,
-    pub task_name: String,
-    pub task_kind: TaskKind,
-
-    pub context: Option<TaskId>,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WakerOp {
     Wake,
@@ -220,13 +189,7 @@ pub fn from_file(filename: String) -> Vec<Record> {
         return Vec::new();
     };
 
-    let result = postcard::from_io(file_buffer).unwrap();
-    let (raw_version, _): (String, _) = result;
-    let Ok(version) = FormatIdentifier::from_str(&raw_version) else {
-        // TODO(hds): Really need to return a `Result` from this function.
-        panic!("Cannot parse format identifier from file");
-    };
-
+    let version = FormatIdentifier::try_from_io(file_buffer.0).unwrap();
     let current = current_software_version();
     if !current.can_read_version(&version) {
         panic!("Software version {current} cannot read file format version {version}",);

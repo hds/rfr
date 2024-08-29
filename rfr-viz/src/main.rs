@@ -1,12 +1,13 @@
-use std::{cmp::Ordering, fs, io::Write};
+use std::{cmp::Ordering, fs, io};
 
 use clap::Parser;
-use collect::SpawnEventKind;
-use rfr::rec::{self, from_file};
-
-use crate::collect::{create_task_rows, WinTimeHandle};
+use rfr::common::TaskKind;
 
 mod collect;
+
+use crate::collect::{
+    chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnEventKind,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -21,37 +22,45 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let records = from_file(args.recording_file);
-    let mut out_fh = fs::File::create(format!("{name}.html", name = &args.name)).unwrap();
+    let out_fh = fs::File::create(format!("{name}.html", name = &args.name)).unwrap();
 
-    //let mut tasks = BTreeMap::new();
-
-    let Some(first) = records.first() else {
-        println!("There are no records in the recording file.");
+    let recording_file_type = fs::metadata(args.recording_file.clone())
+        .unwrap()
+        .file_type();
+    let info = if recording_file_type.is_file() {
+        streaming_recording_info(args.recording_file).unwrap()
+    } else if recording_file_type.is_dir() {
+        chunked_recording_info(args.recording_file).unwrap()
+    } else {
+        println!(
+            "rfr-viz: could not determine type of recording: {}",
+            args.recording_file
+        );
         return;
     };
-    let last = records.last().unwrap();
 
-    let win_time_handle = WinTimeHandle::new(first.meta.timestamp.clone());
-    let end_time = win_time_handle.window_time(&last.meta.timestamp.clone());
+    write_viz(out_fh, info, args.name);
+}
 
+fn write_viz(writer: impl io::Write, info: RecordingInfo, name: String) {
+    let mut out_fh = writer;
+
+    // TODO(hds): this scaling factor is a hack, needs to be fixed.
     let scaling_factor = 1_u64;
     let chart_time = |t: u64| t / scaling_factor;
 
-    let rows = create_task_rows(records);
-
-    write!(out_fh, "{}", header(args.name)).unwrap();
+    write!(out_fh, "{}", header(name)).unwrap();
     // 117: task_details div width
     // 150: some buffer because we're scaling down the time in a hacky way.
     write!(
         out_fh,
         "{}",
-        canvas_start(chart_time(end_time.as_micros()) + 117 + 150)
+        canvas_start(chart_time(info.end_time.as_micros()) + 117 + 150)
     )
     .unwrap();
-    for row in rows {
+    for row in info.task_rows {
         let name = match row.task.task_kind {
-            rec::TaskKind::BlockOn => "<em>block_on</em>",
+            TaskKind::BlockOn => "<em>block_on</em>",
             _ => row.task.task_name.as_str(),
         };
 

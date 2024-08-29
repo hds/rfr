@@ -1,15 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs, io,
+    error, fmt, fs,
+    io::{self, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use jiff::{tz::TimeZone, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 
 use crate::{
-    rec::{self, AbsTimestamp, Task, TaskId},
+    common::{Event, Task, TaskId},
+    identifier::ReadFormatIdentifierError,
+    rec::{self, AbsTimestamp},
     FormatIdentifier, FormatVariant,
 };
 
@@ -260,7 +264,6 @@ impl ThreadChunkBuffer {
         let mut writer = writer;
         let buffer = self.buffer.lock().expect("poisoned");
 
-        postcard::to_io(&self.base_time, &mut writer).unwrap();
         postcard::to_io(&self.start_time, &mut writer).unwrap();
         postcard::to_io(&self.end_time, &mut writer).unwrap();
 
@@ -310,7 +313,7 @@ impl AbsTimestampSecs {
 // A chunk timestamp represents the time of an event with respect to the chunk's base time. It is
 // stored as the number of microseconds since the base time. All events within a chunk must occur
 // at the base time or afterwards.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChunkTimestamp {
     /// Microseconds since the chunk's base time
     pub micros: u64,
@@ -323,37 +326,368 @@ impl ChunkTimestamp {
 }
 
 /// Metadata for an [`EventRecord`].
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Meta {
     /// The timestamp that the event occurs at.
     pub timestamp: ChunkTimestamp,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventRecord {
     pub meta: Meta,
     pub event: Event,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub enum Event {
-    NewTask { id: TaskId },
-    TaskPollStart { id: TaskId },
-    TaskPollEnd { id: TaskId },
-    TaskDrop { id: TaskId },
-    WakerWake { waker: Waker },
-    WakerWakeByRef { waker: Waker },
-    WakerClone { waker: Waker },
-    WakerDrop { waker: Waker },
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Waker {
-    pub task_id: TaskId,
-    pub context: Option<TaskId>,
-}
-
+#[non_exhaustive]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Object {
     Task(Task),
+}
+
+#[derive(Debug)]
+pub struct Recording {
+    identifier: FormatIdentifier,
+    meta: MetaHeader,
+    chunks: Vec<ChunkLoader>,
+}
+
+impl Recording {
+    pub fn load_all_chunks(&mut self) {
+        for chunk_loader in &mut self.chunks {
+            chunk_loader.ensure_chunk();
+        }
+    }
+
+    pub fn identifier(&self) -> &FormatIdentifier {
+        &self.identifier
+    }
+
+    pub fn meta(&self) -> &MetaHeader {
+        &self.meta
+    }
+
+    pub fn chunks_lossy(&mut self) -> impl DoubleEndedIterator<Item = Option<&Chunk>> {
+        self.chunks.iter_mut().map(|loader| {
+            loader.ensure_chunk();
+            match &loader.state {
+                ChunkLoaderState::Chunk(chunk) => Some(chunk),
+                _ => None,
+            }
+        })
+    }
+
+    pub fn chunk_headers_lossy(&mut self) -> impl DoubleEndedIterator<Item = Option<&ChunkHeader>> {
+        self.chunks.iter_mut().map(|loader| {
+            loader.ensure_header();
+            match &loader.state {
+                ChunkLoaderState::Unloaded => None,
+                ChunkLoaderState::Header(header) => Some(header),
+                ChunkLoaderState::Chunk(chunk) => Some(chunk.header()),
+            }
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Chunk {
+    header: ChunkHeader,
+    thread_chunks: Vec<ThreadChunk>,
+}
+
+impl Chunk {
+    pub fn header(&self) -> &ChunkHeader {
+        &self.header
+    }
+
+    pub fn thread_chunks(&self) -> &Vec<ThreadChunk> {
+        &self.thread_chunks
+    }
+
+    pub fn abs_timestamp(&self, chunk_timestamp: &ChunkTimestamp) -> AbsTimestamp {
+        let chunk_timestamp_secs = chunk_timestamp.micros / 1_000_000;
+        let chunk_timestamp_subsec_micros = (chunk_timestamp.micros % 1_000_000) as u32;
+
+        AbsTimestamp {
+            secs: self.header.base_time.secs + chunk_timestamp_secs,
+            subsec_micros: chunk_timestamp_subsec_micros,
+        }
+    }
+
+    fn try_from_io<IO>(reader: IO) -> Result<Self, ChunkReadError>
+    where
+        IO: io::Read + io::Seek,
+    {
+        let mut reader = reader;
+        let mut end_pos = reader
+            .seek(SeekFrom::End(0))
+            .map_err(|_| ChunkReadError::ReadError)?;
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| ChunkReadError::ReadError)?;
+
+        // TODO(hds): Should we validate the identifier?
+        let _identifier = FormatIdentifier::try_from_io(&mut reader).unwrap();
+
+        let (header, _): (ChunkHeader, _) =
+            postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
+
+        let (thread_chunk_len, _): (usize, _) =
+            postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
+        let mut thread_chunks: Vec<ThreadChunk> = Vec::with_capacity(thread_chunk_len);
+
+        let mut buffer = vec![0_u8; 1024];
+        let mut file_buffer = (&mut reader, buffer.as_mut_slice());
+
+        'thread_chunk: for idx in 0..thread_chunk_len {
+            let thread_chunk_result = loop {
+                let Ok(file_pos) = file_buffer.0.stream_position() else {
+                    println!("at {idx} cannot get file position");
+                    break 'thread_chunk;
+                };
+
+                if file_pos >= end_pos {
+                    let Ok(new_end_pos) = file_buffer.0.seek(SeekFrom::End(0)) else {
+                        println!("at {idx} cannot get file length");
+                        break 'thread_chunk;
+                    };
+                    if new_end_pos <= end_pos {
+                        break 'thread_chunk;
+                    }
+
+                    end_pos = new_end_pos;
+                    let Ok(_) = file_buffer.0.seek(SeekFrom::Start(0)) else {
+                        println!("at {idx} cannot seek back to previous file position");
+                        break 'thread_chunk;
+                    };
+                    // Start loop from the beginning, even if this means we need to get the stream
+                    // position again.
+                    continue;
+                }
+
+                break match postcard::from_io(file_buffer) {
+                    Ok(result) => result,
+                    Err(postcard::Error::DeserializeUnexpectedEnd) => {
+                        let new_size = buffer.len() * 2;
+                        const MAX_BUFFER_SIZE: usize = 1 << 20; // 1 MiB
+                        if new_size > MAX_BUFFER_SIZE {
+                            println!(
+                                "excessive buffer required for element (> {MAX_BUFFER_SIZE}), skipping"
+                            );
+                            file_buffer = (&mut reader, buffer.as_mut_slice());
+                            continue 'thread_chunk;
+                        }
+                        buffer.resize(new_size * 2, 0);
+                        if let Err(err) = reader.seek(SeekFrom::Start(file_pos)) {
+                            println!("Could not seek back to start of element after making buffer bigger: {err}");
+                            file_buffer = (&mut reader, buffer.as_mut_slice());
+                            continue 'thread_chunk;
+                        }
+
+                        // We've successfully increased the buffer size, we'll loop back around and
+                        // try to read this element again.
+                        file_buffer = (&mut reader, buffer.as_mut_slice());
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(ChunkReadError::DeserializeError { index: idx, error });
+                    }
+                };
+            };
+
+            thread_chunks.push(thread_chunk_result.0);
+            file_buffer = (thread_chunk_result.1 .0, buffer.as_mut_slice());
+        }
+
+        Ok(Self {
+            header,
+            thread_chunks,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ChunkReadError {
+    Unimplemented,
+    ReadError,
+    DeserializeError {
+        index: usize,
+        error: postcard::Error,
+    },
+}
+
+impl fmt::Display for ChunkReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl error::Error for ChunkReadError {}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChunkHeader {
+    base_time: AbsTimestampSecs,
+    start_time: AbsTimestamp,
+    end_time: AbsTimestamp,
+}
+
+impl ChunkHeader {
+    pub fn base_time(&self) -> &AbsTimestampSecs {
+        &self.base_time
+    }
+
+    pub fn start_time(&self) -> &AbsTimestamp {
+        &self.start_time
+    }
+
+    pub fn end_time(&self) -> &AbsTimestamp {
+        &self.end_time
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ThreadChunk {
+    start_time: AbsTimestamp,
+    end_time: AbsTimestamp,
+    objects: Vec<Object>,
+    events: Vec<EventRecord>,
+}
+
+impl ThreadChunk {
+    pub fn objects(&self) -> &Vec<Object> {
+        &self.objects
+    }
+
+    pub fn events(&self) -> &Vec<EventRecord> {
+        &self.events
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkPath {
+    path: PathBuf,
+}
+
+impl ChunkPath {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+#[derive(Debug)]
+pub struct ChunkLoader {
+    path: ChunkPath,
+    state: ChunkLoaderState,
+}
+
+#[derive(Debug)]
+enum ChunkLoaderState {
+    Unloaded,
+    Header(ChunkHeader),
+    Chunk(Chunk),
+}
+
+impl From<ChunkPath> for ChunkLoader {
+    fn from(value: ChunkPath) -> Self {
+        ChunkLoader {
+            path: value,
+            state: ChunkLoaderState::Unloaded,
+        }
+    }
+}
+
+impl ChunkLoader {
+    pub fn path(&self) -> &PathBuf {
+        &self.path.path
+    }
+
+    fn ensure_header(&mut self) {
+        if let ChunkLoaderState::Unloaded = self.state {
+            let mut file = fs::File::open(&self.path.path).unwrap();
+            let _identifier = FormatIdentifier::try_from_io(&mut file).unwrap();
+
+            let (header, _) = postcard::from_io((&mut file, Vec::new().as_mut_slice())).unwrap();
+
+            self.state = ChunkLoaderState::Header(header);
+        }
+    }
+
+    fn ensure_chunk(&mut self) {
+        match self.state {
+            ChunkLoaderState::Unloaded | ChunkLoaderState::Header(_) => {
+                let file = fs::File::open(&self.path.path).unwrap();
+                match Chunk::try_from_io(file) {
+                    Ok(chunk) => self.state = ChunkLoaderState::Chunk(chunk),
+                    Err(err) => println!("failed to load chunk: {err}"), // do something...
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn read_meta(path: &PathBuf) -> Result<(FormatIdentifier, MetaHeader), MetaReadError> {
+    let mut meta_file = fs::File::open(path).map_err(MetaReadError::OpenFileFailed)?;
+    let format_identifier = FormatIdentifier::try_from_io(&mut meta_file)
+        .map_err(MetaReadError::FormatIdenifierInvalid)?;
+
+    let (header, _) = postcard::from_io((&mut meta_file, Vec::new().as_mut_slice()))
+        .map_err(MetaReadError::HeaderInvalid)?;
+
+    Ok((format_identifier, header))
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum MetaReadError {
+    OpenFileFailed(io::Error),
+    FormatIdenifierInvalid(ReadFormatIdentifierError),
+    HeaderInvalid(postcard::Error),
+}
+
+pub fn from_path(recording_path: String) -> Result<Recording, RecordingReadError> {
+    let recording_path = Path::new(&recording_path);
+    let path = recording_path.join("meta.rfr");
+    let (identifier, meta) = read_meta(&path).map_err(RecordingReadError::ReadingMetaFailed)?;
+
+    let current = current_software_version();
+    if !current.can_read_version(&identifier) {
+        return Err(RecordingReadError::IncompatibleVersion(identifier));
+    }
+
+    let mut chunks = Vec::new();
+    for entry in WalkDir::new(recording_path) {
+        let entry = entry.map_err(RecordingReadError::FilesystemError)?;
+        if !entry.file_type().is_file() {
+            // Skip anything that isn't a file, we're not interested in that.
+            continue;
+        }
+
+        match entry.file_name().to_str() {
+            Some("meta.rfr") => {
+                // We've already read the meta data, so we'll skip it (and any other "meta.rfr" files).
+                continue;
+            }
+            Some(file_name) if file_name.ends_with(".rfr") => {
+                // We assume that this is a chunk
+                chunks.push(ChunkPath::new(entry.clone().into_path()).into());
+            }
+            _ => {}
+        }
+
+        println!("dir entry: {:?}", entry.file_name());
+    }
+
+    Ok(Recording {
+        identifier,
+        meta,
+        chunks,
+    })
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RecordingReadError {
+    Unimplemented,
+    ReadingMetaFailed(MetaReadError),
+    IncompatibleVersion(FormatIdentifier),
+    FilesystemError(walkdir::Error),
 }
