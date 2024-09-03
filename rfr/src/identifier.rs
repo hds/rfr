@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr};
+use std::{fmt, io, str::FromStr};
 
 /// Represents the RFR format variant used to encode a file.
 ///
@@ -162,6 +162,31 @@ impl fmt::Display for ParseFormatVersionError {
             ),
         }
     }
+}
+
+impl FormatIdentifier {
+    pub fn try_from_io(reader: impl io::Read) -> Result<Self, ReadFormatIdentifierError> {
+        let mut reader = reader;
+        let mut buffer = vec![0_u8; 24];
+
+        match postcard::from_io((&mut reader, buffer.as_mut_slice())) {
+            Ok((raw_value, _)) => FormatIdentifier::from_str(raw_value)
+                .map_err(ReadFormatIdentifierError::FormatIdentifierInvalid),
+            Err(postcard::Error::DeserializeUnexpectedEnd) => {
+                Err(ReadFormatIdentifierError::FormatIdentifierTooLong)
+            }
+            Err(postcard_error) => Err(ReadFormatIdentifierError::PostcardReadFailed(
+                postcard_error,
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ReadFormatIdentifierError {
+    PostcardReadFailed(postcard::Error),
+    FormatIdentifierTooLong,
+    FormatIdentifierInvalid(ParseFormatVersionError),
 }
 
 impl FormatIdentifier {

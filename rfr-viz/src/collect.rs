@@ -1,6 +1,10 @@
-use std::{collections::HashMap, fmt, ops::Add, time::Duration};
+use std::{cmp, collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
 
-use rfr::rec::{self, WinTimestamp};
+use rfr::{
+    chunked,
+    common::{Event, Task, TaskId, Waker},
+    rec::{self, from_file, AbsTimestamp, WinTimestamp},
+};
 
 pub(crate) struct WinTimeHandle {
     start_time: rec::AbsTimestamp,
@@ -72,13 +76,21 @@ impl Add<TaskTimestamp> for rec::WinTimestamp {
     }
 }
 
+pub(crate) struct RecordingInfo {
+    pub(crate) task_rows: Vec<TaskRow>,
+    // We will use this to print timestamps
+    #[allow(dead_code)]
+    pub(crate) win_time_handle: WinTimeHandle,
+    pub(crate) end_time: rec::WinTimestamp,
+}
+
 pub(crate) struct TaskEvents {
-    pub(crate) task: rec::Task,
-    pub(crate) events: Vec<rec::Record>,
+    pub(crate) task: Task,
+    pub(crate) events: Vec<EventRecord>,
 }
 
 impl TaskEvents {
-    fn new(task: rec::Task) -> Self {
+    fn new(task: Task) -> Self {
         Self {
             task,
             events: Vec::new(),
@@ -86,38 +98,221 @@ impl TaskEvents {
     }
 }
 
-pub(crate) fn create_task_rows(records: Vec<rec::Record>) -> Vec<TaskRow> {
-    // Records is empty, we can skip everything else, there is nothing to do.
-    if records.is_empty() {
-        return Vec::new();
-    }
-
-    let first = records.first().expect("records is not empty");
-    let win_time_handle = WinTimeHandle::new(first.meta.timestamp.clone());
-
-    let tasks_events = collect_into_tasks(records);
-    collect_into_rows(win_time_handle, tasks_events)
+#[derive(Debug)]
+pub(crate) struct EventRecord {
+    pub(crate) timestamp: AbsTimestamp,
+    pub(crate) event: Event,
 }
 
-pub(crate) fn collect_into_tasks(records: Vec<rec::Record>) -> Vec<TaskEvents> {
+trait TaskEventsCollect {
+    fn collect_into_tasks(&mut self) -> Vec<TaskEvents>;
+
+    fn earliest_timestamp(&mut self) -> Option<AbsTimestamp>;
+    fn latest_timestamp(&mut self) -> Option<AbsTimestamp>;
+}
+
+impl TaskEventsCollect for Vec<rec::Record> {
+    fn collect_into_tasks(&mut self) -> Vec<TaskEvents> {
+        if self.is_empty() {
+            return vec![];
+        }
+
+        collect_into_tasks_from_streaming_records(self)
+    }
+
+    fn earliest_timestamp(&mut self) -> Option<AbsTimestamp> {
+        self.first().map(|r| r.meta.timestamp.clone())
+    }
+
+    fn latest_timestamp(&mut self) -> Option<AbsTimestamp> {
+        self.last().map(|r| r.meta.timestamp.clone())
+    }
+}
+
+impl TaskEventsCollect for chunked::Recording {
+    fn collect_into_tasks(&mut self) -> Vec<TaskEvents> {
+        collect_into_tasks_from_chunked_recording(self)
+    }
+
+    fn earliest_timestamp(&mut self) -> Option<AbsTimestamp> {
+        self.chunks_lossy().find_map(identity).and_then(|chunk| {
+            chunk
+                .thread_chunks()
+                .iter()
+                .filter_map(|thread_chunk| {
+                    thread_chunk
+                        .events()
+                        .first()
+                        .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
+                })
+                .reduce(cmp::min)
+        })
+    }
+
+    fn latest_timestamp(&mut self) -> Option<AbsTimestamp> {
+        self.chunks_lossy()
+            .rev()
+            .find_map(identity)
+            .and_then(|chunk| {
+                chunk
+                    .thread_chunks()
+                    .iter()
+                    .filter_map(|thread_chunk| {
+                        thread_chunk
+                            .events()
+                            .last()
+                            .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
+                    })
+                    .reduce(cmp::max)
+            })
+    }
+}
+
+pub(crate) fn streaming_recording_info(path: String) -> Option<RecordingInfo> {
+    let records = from_file(path);
+
+    create_recording_info(records)
+}
+
+pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
+    let mut recording = chunked::from_path(path).unwrap();
+    recording.load_all_chunks();
+    println!(
+        "Recording: {} {:?}",
+        recording.identifier(),
+        recording.meta()
+    );
+    for chunk in recording.chunks_lossy() {
+        let Some(chunk) = chunk else { continue };
+        println!("--------------------------------");
+        println!("Chunk: {:?}", chunk.header());
+        for thread_chunk in chunk.thread_chunks() {
+            println!("- Thread Chunk:");
+            println!("  - Objects:");
+            for object in thread_chunk.objects() {
+                println!("    - {object:?}");
+            }
+            println!("  - Events:");
+            for events in thread_chunk.events() {
+                println!("    - {events:?}");
+            }
+        }
+        println!("--------------------------------");
+    }
+
+    create_recording_info(recording)
+}
+
+fn create_recording_info(recording: impl TaskEventsCollect) -> Option<RecordingInfo> {
+    let mut recording = recording;
+
+    let start_timestamp = recording.earliest_timestamp()?;
+    println!("start timestamp: {start_timestamp:?}");
+    let win_time_handle = WinTimeHandle::new(start_timestamp);
+
+    let end_timestamp = recording.latest_timestamp()?;
+    let end_time = win_time_handle.window_time(&end_timestamp);
+
+    let tasks_events = recording.collect_into_tasks();
+    for task_events in &tasks_events {
+        println!("Task: {:?}", &task_events.task);
+        for event in &task_events.events {
+            println!(" - {:?}", event);
+        }
+    }
+    if tasks_events.is_empty() {
+        return None;
+    }
+    let task_rows = collect_into_rows(&win_time_handle, tasks_events);
+    if task_rows.is_empty() {
+        return None;
+    }
+
+    Some(RecordingInfo {
+        task_rows,
+        win_time_handle,
+        end_time,
+    })
+}
+
+pub(crate) fn collect_into_tasks_from_chunked_recording(
+    recording: &mut chunked::Recording,
+) -> Vec<TaskEvents> {
+    let mut tasks = HashMap::new();
+
+    for chunk in recording.chunks_lossy() {
+        let Some(chunk) = chunk else { continue };
+        for thread_chunk in chunk.thread_chunks() {
+            for object in thread_chunk.objects() {
+                if let chunked::Object::Task(task) = object {
+                    let task_entry = TaskEvents::new(task.clone());
+                    tasks.insert(task.task_id, task_entry);
+                }
+            }
+
+            for record in thread_chunk.events() {
+                let task_id = match &record.event {
+                    Event::NewTask { id }
+                    | Event::TaskPollStart { id }
+                    | Event::TaskPollEnd { id }
+                    | Event::TaskDrop { id } => id,
+                    Event::WakerWake { waker }
+                    | Event::WakerWakeByRef { waker }
+                    | Event::WakerClone { waker }
+                    | Event::WakerDrop { waker } => &waker.task_id,
+                    _ => continue,
+                };
+
+                let record = EventRecord {
+                    timestamp: chunk.abs_timestamp(&record.meta.timestamp),
+                    event: record.event.clone(),
+                };
+
+                tasks.entry(*task_id).and_modify(|r| r.events.push(record));
+            }
+        }
+    }
+
+    tasks.into_values().collect()
+}
+
+pub(crate) fn collect_into_tasks_from_streaming_records(
+    records: &Vec<rec::Record>,
+) -> Vec<TaskEvents> {
     let mut tasks = HashMap::new();
 
     for record in records {
-        if let rec::Event::Task(task) = record.event {
+        if let rec::Event::Task(task) = &record.event {
             let task_entry = TaskEvents::new(task.clone());
             tasks.insert(task.task_id, task_entry);
         } else {
-            let task_id = match &record.event {
-                rec::Event::NewTask { id }
-                | rec::Event::TaskPollStart { id }
-                | rec::Event::TaskPollEnd { id }
-                | rec::Event::TaskDrop { id } => id,
-                rec::Event::WakerOp(rec::WakerAction { task_id, .. }) => task_id,
+            let (event, task_id) = match &record.event {
+                rec::Event::NewTask { id } => (Event::NewTask { id: *id }, *id),
+                rec::Event::TaskPollStart { id } => (Event::TaskPollStart { id: *id }, *id),
+                rec::Event::TaskPollEnd { id } => (Event::TaskPollEnd { id: *id }, *id),
+                rec::Event::TaskDrop { id } => (Event::TaskDrop { id: *id }, *id),
+                rec::Event::WakerOp(action) => {
+                    let waker = Waker {
+                        task_id: action.task_id,
+                        context: action.context,
+                    };
+                    let event = match action.op {
+                        rec::WakerOp::Wake => Event::WakerWake { waker },
+                        rec::WakerOp::WakeByRef => Event::WakerWakeByRef { waker },
+                        rec::WakerOp::Clone => Event::WakerClone { waker },
+                        rec::WakerOp::Drop => Event::WakerDrop { waker },
+                    };
+                    (event, action.task_id)
+                }
                 rec::Event::Task(_) => {
                     unreachable!("task events have already been filtered out")
                 }
             };
-            tasks.entry(*task_id).and_modify(|r| r.events.push(record));
+            let record = EventRecord {
+                timestamp: record.meta.timestamp.clone(),
+                event,
+            };
+            tasks.entry(task_id).and_modify(|r| r.events.push(record));
         }
     }
 
@@ -127,7 +322,7 @@ pub(crate) fn collect_into_tasks(records: Vec<rec::Record>) -> Vec<TaskEvents> {
 pub(crate) struct TaskRow {
     pub(crate) index: TaskIndex,
     pub(crate) start_time: rec::WinTimestamp,
-    pub(crate) task: rec::Task,
+    pub(crate) task: Task,
     pub(crate) sections: Vec<TaskSection>,
     pub(crate) spawn: Option<SpawnEvent>,
     pub(crate) wakings: Vec<WakeEvent>,
@@ -253,7 +448,7 @@ impl TaskIndex {
 }
 
 pub(crate) fn collect_into_rows(
-    win_time_handle: WinTimeHandle,
+    win_time_handle: &WinTimeHandle,
     tasks_events: Vec<TaskEvents>,
 ) -> Vec<TaskRow> {
     let mut tasks_events = tasks_events;
@@ -268,8 +463,7 @@ pub(crate) fn collect_into_rows(
         .iter()
         .map(|(idx, task_events)| (task_events.task.task_id, *idx))
         .collect();
-    let get_index =
-        |task_id: Option<rec::TaskId>| task_id.and_then(|id| task_indices.get(&id).copied());
+    let get_index = |task_id: Option<TaskId>| task_id.and_then(|id| task_indices.get(&id).copied());
 
     let mut task_rows = Vec::new();
     for (index, TaskEvents { task, events }) in tasks_with_indicies {
@@ -278,9 +472,9 @@ pub(crate) fn collect_into_rows(
         }
 
         let first = &events.first().expect("events is not empty");
-        let start_time = if let rec::Event::NewTask { .. } = &first.event {
+        let start_time = if let Event::NewTask { .. } = &first.event {
             // The event starts within this window
-            win_time_handle.window_time(&first.meta.timestamp)
+            win_time_handle.window_time(&first.timestamp)
         } else {
             // The task started before this window, so we set the task time to start with
             // the window.
@@ -292,11 +486,10 @@ pub(crate) fn collect_into_rows(
         let mut wake_events = Vec::new();
         let mut spawn_event = None;
         for rec in events {
-            use rec::Event::{NewTask, TaskDrop, TaskPollEnd, TaskPollStart, WakerOp};
-            let ts = task_time_handle.task_time(&win_time_handle.window_time(&rec.meta.timestamp));
+            let ts = task_time_handle.task_time(&win_time_handle.window_time(&rec.timestamp));
 
             match &rec.event {
-                NewTask { .. } => {
+                Event::NewTask { .. } => {
                     debug_assert!(spawn_event.is_none(), "multiple NewTask events");
                     spawn_event = Some(SpawnEvent {
                         ts: ts.clone(),
@@ -309,56 +502,59 @@ pub(crate) fn collect_into_rows(
                         kind: TaskEventKind::New,
                     });
                 }
-                TaskPollStart { .. } => task_events.push(TaskEvent {
+                Event::TaskPollStart { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::PollStart,
                 }),
-                TaskPollEnd { .. } => task_events.push(TaskEvent {
+                Event::TaskPollEnd { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::PollEnd,
                 }),
-                TaskDrop { .. } => task_events.push(TaskEvent {
+                Event::TaskDrop { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::Drop,
                 }),
-                WakerOp(action) => {
-                    let kind = match &action.op {
-                        rec::WakerOp::Wake => {
-                            task_events.push(TaskEvent {
-                                ts: ts.clone(),
-                                kind: TaskEventKind::Wake,
-                            });
+                Event::WakerWake { waker } => {
+                    task_events.push(TaskEvent {
+                        ts: ts.clone(),
+                        kind: TaskEventKind::Wake,
+                    });
 
-                            if Some(action.task_id) == action.context {
-                                WakeEventKind::SelfWake
-                            } else {
-                                WakeEventKind::Wake {
-                                    by: get_index(action.context),
-                                }
-                            }
+                    let kind = if Some(waker.task_id) == waker.context {
+                        WakeEventKind::SelfWake
+                    } else {
+                        WakeEventKind::Wake {
+                            by: get_index(waker.context),
                         }
-                        rec::WakerOp::WakeByRef => {
-                            task_events.push(TaskEvent {
-                                ts: ts.clone(),
-                                kind: TaskEventKind::Wake,
-                            });
-
-                            if Some(action.task_id) == action.context {
-                                WakeEventKind::SelfWakeByRef
-                            } else {
-                                WakeEventKind::WakeByRef {
-                                    by: get_index(action.context),
-                                }
-                            }
-                        }
-                        rec::WakerOp::Clone => WakeEventKind::Clone,
-                        rec::WakerOp::Drop => WakeEventKind::Drop,
                     };
+
                     wake_events.push(WakeEvent { ts, kind });
                 }
-                rec::Event::Task(_) => {
-                    unreachable!("the events vec shouldn't contain task objects")
+                Event::WakerWakeByRef { waker } => {
+                    task_events.push(TaskEvent {
+                        ts: ts.clone(),
+                        kind: TaskEventKind::Wake,
+                    });
+
+                    let kind = if Some(waker.task_id) == waker.context {
+                        WakeEventKind::SelfWakeByRef
+                    } else {
+                        WakeEventKind::WakeByRef {
+                            by: get_index(waker.context),
+                        }
+                    };
+
+                    wake_events.push(WakeEvent { ts, kind });
                 }
+                Event::WakerClone { .. } => wake_events.push(WakeEvent {
+                    ts,
+                    kind: WakeEventKind::Clone,
+                }),
+                Event::WakerDrop { .. } => wake_events.push(WakeEvent {
+                    ts,
+                    kind: WakeEventKind::Drop,
+                }),
+                _ => continue, // Skip unknown events
             }
         }
 
