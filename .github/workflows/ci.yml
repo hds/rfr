@@ -1,0 +1,122 @@
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+name: CI
+
+env:
+  # Disable incremental compilation.
+  #
+  # Incremental compilation is useful as part of an edit-build-test-edit cycle,
+  # as it lets the compiler avoid recompiling code that hasn't changed. However,
+  # on CI, we're not making small edits; we're almost always building the entire
+  # project from scratch. Thus, incremental compilation on CI actually
+  # introduces *additional* overhead to support making future builds
+  # faster...but no future builds will ever occur in any given CI environment.
+  #
+  # See https://matklad.github.io/2021/09/04/fast-rust-builds.html#ci-workflow
+  # for details.
+  CARGO_INCREMENTAL: 0
+  # Allow more retries for network requests in cargo (downloading crates) and
+  # rustup (installing toolchains). This should help to reduce flaky CI failures
+  # from transient network timeouts or other issues.
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  # Don't emit giant backtraces in the CI logs.
+  RUST_BACKTRACE: short
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run cargo check
+        run: cargo check
+
+  test_os:
+    name: Tests on ${{ matrix.os }} with Rust ${{ matrix.rust }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+        include:
+          - rust: 1.76.0
+            os: ubuntu-latest
+          # Try to build on the latest nightly. This job is allowed to fail, but
+          # it's useful to help catch bugs in upcoming Rust versions.
+          - rust: nightly
+            os: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install ${{ matrix.rust }} toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo test (rfr)
+        run: cargo test -p rfr
+
+      - name: Run cargo test (subscriber)
+        run: cargo test -p rfr-subscriber
+
+      - name: Run cargo test (viz)
+        run: cargo test -p rfr-viz
+
+  lints:
+    name: Lints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Spawn (streamed)
+        run: cargo run -p rfr-subscriber --example spawn && cargo run -p rfr-viz -- recording-spawn-stream.rfr --name spawn-stream
+
+      - name: Ping pong (streamed)
+        run: cargo run -p rfr-subscriber --example ping-pong && cargo run -p rfr-viz -- recording-ping_pong-stream.rfr --name ping-pong-stream
+
+      - name: Spawn (chunked)
+        run: cargo run -p rfr-subscriber --example spawn-chunked && cargo run -p rfr-viz -- chunked-spawn.rfr --name spawn-chunked
+      - name: Ping pong (chunked)
+        run: cargo run -p rfr-subscriber --example ping-pong-chunked && cargo run -p rfr-viz -- chunked-ping-pong.rfr --name ping-pong-chunked

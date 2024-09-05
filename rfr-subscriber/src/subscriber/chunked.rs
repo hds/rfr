@@ -333,7 +333,7 @@ where
                 };
 
                 self.write_record(rec_meta.timestamp, task_drop);
-                self.drop_object(&task_id);
+                self.drop_object(task_id);
             }
         }
     }
