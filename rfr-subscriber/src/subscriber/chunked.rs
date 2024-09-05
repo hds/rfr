@@ -106,7 +106,7 @@ impl RfrChunkedLayer {
 
     fn write_record(&self, timestamp: rec::AbsTimestamp, event: common::Event) {
         thread_local! {
-            pub static CHUNK_BUFFER: RefCell<Option<Arc<chunked::ThreadChunkBuffer>>>
+            pub static CHUNK_BUFFER: RefCell<Option<Arc<chunked::SeqChunkBuffer>>>
                 = const { RefCell::new(None) };
         }
 
@@ -124,9 +124,9 @@ impl RfrChunkedLayer {
 
     fn current_chunk_buffer<'a>(
         &self,
-        local_buffer: &'a mut Option<Arc<chunked::ThreadChunkBuffer>>,
+        local_buffer: &'a mut Option<Arc<chunked::SeqChunkBuffer>>,
         timestamp: rec::AbsTimestamp,
-    ) -> &'a mut Arc<chunked::ThreadChunkBuffer> {
+    ) -> &'a mut Arc<chunked::SeqChunkBuffer> {
         let base_time = AbsTimestampSecs::from(timestamp.clone());
         let buffer = local_buffer.get_or_insert_with(|| self.new_chunk(timestamp.clone()));
 
@@ -151,8 +151,8 @@ impl RfrChunkedLayer {
         buffer
     }
 
-    fn new_chunk(&self, timestamp: rec::AbsTimestamp) -> Arc<chunked::ThreadChunkBuffer> {
-        let new_chunk = Arc::new(chunked::ThreadChunkBuffer::new(timestamp));
+    fn new_chunk(&self, timestamp: rec::AbsTimestamp) -> Arc<chunked::SeqChunkBuffer> {
+        let new_chunk = Arc::new(chunked::SeqChunkBuffer::new(timestamp));
         self.writer_handle
             .writer
             .register_chunk(Arc::clone(&new_chunk));

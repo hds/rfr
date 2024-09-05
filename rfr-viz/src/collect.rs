@@ -137,11 +137,11 @@ impl TaskEventsCollect for chunked::Recording {
     fn earliest_timestamp(&mut self) -> Option<AbsTimestamp> {
         self.chunks_lossy().find_map(identity).and_then(|chunk| {
             chunk
-                .thread_chunks()
+                .seq_chunks()
                 .iter()
-                .filter_map(|thread_chunk| {
-                    thread_chunk
-                        .events()
+                .filter_map(|seq_chunk| {
+                    seq_chunk
+                        .events
                         .first()
                         .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
                 })
@@ -155,11 +155,11 @@ impl TaskEventsCollect for chunked::Recording {
             .find_map(identity)
             .and_then(|chunk| {
                 chunk
-                    .thread_chunks()
+                    .seq_chunks()
                     .iter()
-                    .filter_map(|thread_chunk| {
-                        thread_chunk
-                            .events()
+                    .filter_map(|seq_chunk| {
+                        seq_chunk
+                            .events
                             .last()
                             .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
                     })
@@ -186,14 +186,14 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
         let Some(chunk) = chunk else { continue };
         println!("--------------------------------");
         println!("Chunk: {:?}", chunk.header());
-        for thread_chunk in chunk.thread_chunks() {
-            println!("- Thread Chunk:");
+        for seq_chunk in chunk.seq_chunks() {
+            println!("- Seqence Chunk:");
             println!("  - Objects:");
-            for object in thread_chunk.objects() {
+            for object in &seq_chunk.objects {
                 println!("    - {object:?}");
             }
             println!("  - Events:");
-            for events in thread_chunk.events() {
+            for events in &seq_chunk.events {
                 println!("    - {events:?}");
             }
         }
@@ -242,15 +242,15 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
 
     for chunk in recording.chunks_lossy() {
         let Some(chunk) = chunk else { continue };
-        for thread_chunk in chunk.thread_chunks() {
-            for object in thread_chunk.objects() {
+        for seq_chunk in chunk.seq_chunks() {
+            for object in &seq_chunk.objects {
                 if let chunked::Object::Task(task) = object {
                     let task_entry = TaskEvents::new(task.clone());
                     tasks.insert(task.task_id, task_entry);
                 }
             }
 
-            for record in thread_chunk.events() {
+            for record in &seq_chunk.events {
                 let task_id = match &record.event {
                     Event::NewTask { id }
                     | Event::TaskPollStart { id }

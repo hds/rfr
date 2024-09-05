@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     error, fmt, fs,
     io::{self, SeekFrom},
     path::{Path, PathBuf},
@@ -11,11 +11,14 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
-    common::{Event, Task, TaskId},
+    common::{Event, Task},
     identifier::ReadFormatIdentifierError,
     rec::{self, AbsTimestamp},
     FormatIdentifier, FormatVariant,
 };
+
+mod sequence;
+pub use sequence::{SeqChunk, SeqChunkBuffer};
 
 fn current_software_version() -> FormatIdentifier {
     FormatIdentifier {
@@ -31,7 +34,7 @@ pub struct ChunkedWriter {
     root_dir: String,
     base_time: AbsTimestampSecs,
 
-    chunks: Mutex<Vec<Arc<ThreadChunkBuffer>>>,
+    chunks: Mutex<Vec<Arc<SeqChunkBuffer>>>,
 }
 
 impl ChunkedWriter {
@@ -95,7 +98,7 @@ impl ChunkedWriter {
             .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S")))
     }
 
-    pub fn register_chunk(&self, chunk: Arc<ThreadChunkBuffer>) {
+    pub fn register_chunk(&self, chunk: Arc<SeqChunkBuffer>) {
         let mut chunks = self.chunks.lock().expect("poisoned");
 
         chunks.push(chunk);
@@ -103,13 +106,13 @@ impl ChunkedWriter {
 
     pub fn write(&self) {
         let mut chunk_buffers: HashMap<AbsTimestampSecs, ChunkBuffer> = HashMap::new();
-        let mut thread_chunks = self.chunks.lock().expect("poisoned");
+        let mut seq_chunks = self.chunks.lock().expect("poisoned");
 
-        for thread_chunk in &*thread_chunks {
+        for seq_chunk in &*seq_chunks {
             chunk_buffers
-                .entry(thread_chunk.base_time)
-                .and_modify(|chunk| chunk.push_thread_chunk(Arc::clone(thread_chunk)))
-                .or_insert_with(|| ChunkBuffer::with_first_thread_chunk(Arc::clone(thread_chunk)));
+                .entry(seq_chunk.base_time())
+                .and_modify(|chunk| chunk.push_seq_chunk(Arc::clone(seq_chunk)))
+                .or_insert_with(|| ChunkBuffer::with_first_seq_chunk(Arc::clone(seq_chunk)));
         }
 
         for chunk_buffer in chunk_buffers.into_values() {
@@ -117,7 +120,7 @@ impl ChunkedWriter {
             chunk_buffer.write(writer);
         }
 
-        thread_chunks.clear();
+        seq_chunks.clear();
     }
 
     fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
@@ -131,26 +134,26 @@ pub struct ChunkBuffer {
     start_time: AbsTimestamp,
     end_time: AbsTimestamp,
 
-    thread_chunks: Vec<Arc<ThreadChunkBuffer>>,
+    seq_chunks: Vec<Arc<SeqChunkBuffer>>,
 }
 
 impl ChunkBuffer {
-    fn with_first_thread_chunk(thread_chunk: Arc<ThreadChunkBuffer>) -> Self {
+    fn with_first_seq_chunk(seq_chunk: Arc<SeqChunkBuffer>) -> Self {
         Self {
-            base_time: thread_chunk.base_time,
-            start_time: thread_chunk.start_time.clone(),
-            end_time: thread_chunk.end_time.clone(),
-            thread_chunks: vec![thread_chunk],
+            base_time: seq_chunk.base_time(),
+            start_time: seq_chunk.start_time(),
+            end_time: seq_chunk.end_time(),
+            seq_chunks: vec![seq_chunk],
         }
     }
 
-    fn push_thread_chunk(&mut self, thread_chunk: Arc<ThreadChunkBuffer>) {
-        assert_eq!(self.base_time, thread_chunk.base_time);
+    fn push_seq_chunk(&mut self, seq_chunk: Arc<SeqChunkBuffer>) {
+        assert_eq!(self.base_time, seq_chunk.base_time());
 
-        self.start_time = self.start_time.clone().min(thread_chunk.start_time.clone());
-        self.end_time = self.end_time.clone().max(thread_chunk.end_time.clone());
+        self.start_time = self.start_time.clone().min(seq_chunk.start_time());
+        self.end_time = self.end_time.clone().max(seq_chunk.end_time());
 
-        self.thread_chunks.push(thread_chunk);
+        self.seq_chunks.push(seq_chunk);
     }
 
     fn write(&self, writer: impl io::Write) {
@@ -163,117 +166,10 @@ impl ChunkBuffer {
         postcard::to_io(&self.start_time, &mut writer).unwrap();
         postcard::to_io(&self.end_time, &mut writer).unwrap();
 
-        postcard::to_io(&self.thread_chunks.len(), &mut writer).unwrap();
-        for thread_chunk in &self.thread_chunks {
-            thread_chunk.write(&mut writer);
+        postcard::to_io(&self.seq_chunks.len(), &mut writer).unwrap();
+        for seq_chunk in &self.seq_chunks {
+            seq_chunk.write(&mut writer);
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct ThreadChunkBuffer {
-    base_time: AbsTimestampSecs,
-    start_time: AbsTimestamp,
-    end_time: AbsTimestamp,
-    buffer: Mutex<Buffer>,
-}
-
-#[derive(Debug, Default)]
-struct Buffer {
-    objects: HashMap<TaskId, Vec<u8>>,
-    missing_objects: HashSet<TaskId>,
-    event_count: usize,
-    events: Vec<u8>,
-}
-
-impl ThreadChunkBuffer {
-    pub fn new(now: AbsTimestamp) -> Self {
-        Self {
-            base_time: now.clone().into(),
-            start_time: now.clone(),
-            end_time: now,
-            buffer: Default::default(),
-        }
-    }
-
-    pub fn base_time(&self) -> AbsTimestampSecs {
-        self.base_time
-    }
-
-    pub fn chunk_timestamp(&self, timestamp: rec::AbsTimestamp) -> ChunkTimestamp {
-        let secs = timestamp.secs.saturating_sub(self.base_time.secs);
-        let micros = (secs * 1_000_000) + timestamp.subsec_micros as u64;
-        ChunkTimestamp::new(micros)
-    }
-
-    pub fn append_record<F>(&self, record: EventRecord, get_objects: F)
-    where
-        F: FnOnce(&[TaskId]) -> Vec<Option<Object>>,
-    {
-        let mut buffer = self.buffer.lock().expect("poisoned");
-        let mut missing_task_ids = Vec::new();
-        match &record.event {
-            Event::NewTask { id }
-            | Event::TaskPollStart { id }
-            | Event::TaskPollEnd { id }
-            | Event::TaskDrop { id } => {
-                if !buffer.objects.contains_key(id) {
-                    missing_task_ids.push(*id);
-                }
-            }
-            Event::WakerWake { waker }
-            | Event::WakerWakeByRef { waker }
-            | Event::WakerClone { waker }
-            | Event::WakerDrop { waker } => {
-                if !buffer.objects.contains_key(&waker.task_id) {
-                    missing_task_ids.push(waker.task_id);
-                }
-                if let Some(context_task_id) = &waker.context {
-                    if context_task_id != &waker.task_id
-                        && !buffer.objects.contains_key(context_task_id)
-                    {
-                        missing_task_ids.push(*context_task_id);
-                    }
-                }
-            }
-        }
-
-        let missing_tasks = get_objects(missing_task_ids.as_slice());
-        for (task_id, task) in missing_task_ids.into_iter().zip(missing_tasks.into_iter()) {
-            match task {
-                Some(task) => {
-                    let task_buffer = postcard::to_stdvec(&task).unwrap();
-                    buffer.objects.insert(task_id, task_buffer);
-                }
-                None => {
-                    // TODO(hds): Currently we don't do anything with this information, should we?
-                    //            Also, should we actually return early here or should we continue?
-                    //            If we do want to return early, we should probably not write any
-                    //            task data to `buffer.objects`.
-                    buffer.missing_objects.insert(task_id);
-                    return;
-                }
-            }
-        }
-
-        postcard::to_io(&record, &mut buffer.events).unwrap();
-        buffer.event_count += 1;
-    }
-
-    fn write(&self, writer: impl io::Write) {
-        let mut writer = writer;
-        let buffer = self.buffer.lock().expect("poisoned");
-
-        postcard::to_io(&self.start_time, &mut writer).unwrap();
-        postcard::to_io(&self.end_time, &mut writer).unwrap();
-
-        postcard::to_io(&buffer.objects.len(), &mut writer).unwrap();
-        for object_data in buffer.objects.values() {
-            writer.write_all(object_data.as_slice()).unwrap();
-        }
-
-        postcard::to_io(&buffer.event_count, &mut writer).unwrap();
-        writer.write_all(buffer.events.as_slice()).unwrap();
     }
 }
 
@@ -313,7 +209,7 @@ impl AbsTimestampSecs {
 // A chunk timestamp represents the time of an event with respect to the chunk's base time. It is
 // stored as the number of microseconds since the base time. All events within a chunk must occur
 // at the base time or afterwards.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ChunkTimestamp {
     /// Microseconds since the chunk's base time
     pub micros: u64,
@@ -326,20 +222,20 @@ impl ChunkTimestamp {
 }
 
 /// Metadata for an [`EventRecord`].
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Meta {
     /// The timestamp that the event occurs at.
     pub timestamp: ChunkTimestamp,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct EventRecord {
     pub meta: Meta,
     pub event: Event,
 }
 
 #[non_exhaustive]
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Object {
     Task(Task),
 }
@@ -391,7 +287,7 @@ impl Recording {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Chunk {
     header: ChunkHeader,
-    thread_chunks: Vec<ThreadChunk>,
+    seq_chunks: Vec<SeqChunk>,
 }
 
 impl Chunk {
@@ -399,8 +295,8 @@ impl Chunk {
         &self.header
     }
 
-    pub fn thread_chunks(&self) -> &Vec<ThreadChunk> {
-        &self.thread_chunks
+    pub fn seq_chunks(&self) -> &Vec<SeqChunk> {
+        &self.seq_chunks
     }
 
     pub fn abs_timestamp(&self, chunk_timestamp: &ChunkTimestamp) -> AbsTimestamp {
@@ -431,33 +327,33 @@ impl Chunk {
         let (header, _): (ChunkHeader, _) =
             postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
 
-        let (thread_chunk_len, _): (usize, _) =
+        let (seq_chunk_len, _): (usize, _) =
             postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
-        let mut thread_chunks: Vec<ThreadChunk> = Vec::with_capacity(thread_chunk_len);
+        let mut seq_chunks: Vec<SeqChunk> = Vec::with_capacity(seq_chunk_len);
 
         let mut buffer = vec![0_u8; 1024];
         let mut file_buffer = (&mut reader, buffer.as_mut_slice());
 
-        'thread_chunk: for idx in 0..thread_chunk_len {
-            let thread_chunk_result = loop {
+        'seq_chunk: for idx in 0..seq_chunk_len {
+            let seq_chunk_result = loop {
                 let Ok(file_pos) = file_buffer.0.stream_position() else {
                     println!("at {idx} cannot get file position");
-                    break 'thread_chunk;
+                    break 'seq_chunk;
                 };
 
                 if file_pos >= end_pos {
                     let Ok(new_end_pos) = file_buffer.0.seek(SeekFrom::End(0)) else {
                         println!("at {idx} cannot get file length");
-                        break 'thread_chunk;
+                        break 'seq_chunk;
                     };
                     if new_end_pos <= end_pos {
-                        break 'thread_chunk;
+                        break 'seq_chunk;
                     }
 
                     end_pos = new_end_pos;
                     let Ok(_) = file_buffer.0.seek(SeekFrom::Start(0)) else {
                         println!("at {idx} cannot seek back to previous file position");
-                        break 'thread_chunk;
+                        break 'seq_chunk;
                     };
                     // Start loop from the beginning, even if this means we need to get the stream
                     // position again.
@@ -474,13 +370,13 @@ impl Chunk {
                                 "excessive buffer required for element (> {MAX_BUFFER_SIZE}), skipping"
                             );
                             file_buffer = (&mut reader, buffer.as_mut_slice());
-                            continue 'thread_chunk;
+                            continue 'seq_chunk;
                         }
                         buffer.resize(new_size * 2, 0);
                         if let Err(err) = reader.seek(SeekFrom::Start(file_pos)) {
                             println!("Could not seek back to start of element after making buffer bigger: {err}");
                             file_buffer = (&mut reader, buffer.as_mut_slice());
-                            continue 'thread_chunk;
+                            continue 'seq_chunk;
                         }
 
                         // We've successfully increased the buffer size, we'll loop back around and
@@ -494,14 +390,11 @@ impl Chunk {
                 };
             };
 
-            thread_chunks.push(thread_chunk_result.0);
-            file_buffer = (thread_chunk_result.1 .0, buffer.as_mut_slice());
+            seq_chunks.push(seq_chunk_result.0);
+            file_buffer = (seq_chunk_result.1 .0, buffer.as_mut_slice());
         }
 
-        Ok(Self {
-            header,
-            thread_chunks,
-        })
+        Ok(Self { header, seq_chunks })
     }
 }
 
@@ -540,24 +433,6 @@ impl ChunkHeader {
 
     pub fn end_time(&self) -> &AbsTimestamp {
         &self.end_time
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ThreadChunk {
-    start_time: AbsTimestamp,
-    end_time: AbsTimestamp,
-    objects: Vec<Object>,
-    events: Vec<EventRecord>,
-}
-
-impl ThreadChunk {
-    pub fn objects(&self) -> &Vec<Object> {
-        &self.objects
-    }
-
-    pub fn events(&self) -> &Vec<EventRecord> {
-        &self.events
     }
 }
 

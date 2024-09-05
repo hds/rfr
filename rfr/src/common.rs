@@ -15,7 +15,7 @@ impl TaskId {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TaskKind {
     Task,
     Local,
@@ -24,7 +24,7 @@ pub enum TaskKind {
     Other(String),
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Task {
     pub task_id: TaskId,
     pub task_name: String,
@@ -33,14 +33,14 @@ pub struct Task {
     pub context: Option<TaskId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Waker {
     pub task_id: TaskId,
     pub context: Option<TaskId>,
 }
 
 #[non_exhaustive]
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Event {
     NewTask { id: TaskId },
     TaskPollStart { id: TaskId },
