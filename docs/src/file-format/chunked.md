@@ -47,7 +47,7 @@ read from the middle of an execution. The structure is the following:
 | base\_time         | [AbsTimestampSecs]                   |
 | start\_time        | [ChunkTimestamp]                     |
 | end\_time          | [ChunkTimestamp]                     |
-| thread\_chunks     | \[[ThreadChunk]\]                    |
+| seq\_chunks        | \[[SeqChunk]\]                       |
 
 
 ### AbsTimestampSecs
@@ -73,29 +73,40 @@ won't be any difference in the file format as long as we stay within the value r
 just the internal memory representation.
 </div>
 
-### ThreadChunk
+### SeqChunk
 
-All events are recorded thread local. After a chunk's time period has finished, all the thread local
-parts are collected and written out. The thread chunk contains the thread local recording.
+Events in a single [Chunk] may not be globally ordered. However, all events recorded in a sequence
+chunk must be present in order. Generally this corresponds to recording the events thread-local.
+After a chunk's time period has finished, all the sequences are collected and written out. The
+sequence chunk would then contain the thread local recording.
 
-Thread chunks are not aggregated prior to being written out. As such, it is possible that the
-objects stored in one thread chunk may be duplicated in other thread chunks within the same parent chunk.
+Sequence chunks are not aggregated prior to being written out. As such, it is possible that the
+objects stored in one sequence chunk may be duplicated in other sequence chunks within the same
+parent chunk.
 
 | Element     | Representation    |
 |-------------|-------------------|
+| seq\_id     | [SeqId]           |
 | start\_time | [ChunkTimestamp]  |
 | end\_time   | [ChunkTimestamp]  |
 | objects     | \[[Object]\]      |
 | events      | \[[EventRecord]\] |
 
-The start time and end time are the minimum and maximum times of the recorded events in this thread
-chunk respectively.
+The start time and end time are the minimum and maximum times of the recorded events in this
+sequence chunk respectively.
 
-The objects array contains all objects referenced by events in this thread chunk. The events contain
-the occurences during the time period. This structure is different from the [streaming] file format
-where events and objects are mixed in a single stream of records.
+The objects array contains all objects referenced by events in this sequence chunk. The events
+contain the occurences during the time period. This structure is different from the [streaming] file
+format where events and objects are mixed in a single stream of records.
+
+### SeqId
+
+The sequence identifier is an internal identifier for an in-order sequence of events created by
+instrumentation. Usually, a sequence identifier maps directly to a thread where instrumentation is
+collected. It is stored as a [`newtype_struct`] of a single [`varint(u64)`].
 
 ### Object
+
 An object is a [tagged union] that contains object data. Object data isn't expected to change
 significanly during the course of an application execution.
 
@@ -127,16 +138,16 @@ Metadata for a record.
 
 Event is a [tagged union] that contains events concerning those objects.
 
-| Variant        | Discriminant | Data                        |
-|----------------|--------------|-----------------------------|
-| NewTask        | 0            | `id`: [TaskId]              |
-| TaskPollStart  | 1            | `id`: [TaskId]              |
-| TaskPollEnd    | 2            | `id`: [TaskId]              |
-| TaskDrop       | 3            | `id`: [TaskId]              |
-| WakerWake      | 4            | `waker`: [Waker]            |
-| WakerWakeByRef | 5            | `waker`: [Waker]            |
-| WakerClone     | 6            | `waker`: [Waker]            |
-| WakerDrop      | 7            | `waker`: [Waker]            |
+| Variant        | Discriminant | Data             |
+|----------------|--------------|------------------|
+| NewTask        | 0            | `id`: [TaskId]   |
+| TaskPollStart  | 1            | `id`: [TaskId]   |
+| TaskPollEnd    | 2            | `id`: [TaskId]   |
+| TaskDrop       | 3            | `id`: [TaskId]   |
+| WakerWake      | 4            | `waker`: [Waker] |
+| WakerWakeByRef | 5            | `waker`: [Waker] |
+| WakerClone     | 6            | `waker`: [Waker] |
+| WakerDrop      | 7            | `waker`: [Waker] |
 
 Events are encoded in a single large [tagged union] rather than hierachically as each level of a
 union hierarchy costs an extra byte (for unions with up to 127 variants).
@@ -149,7 +160,8 @@ union hierarchy costs an extra byte (for unions with up to 127 variants).
 [EventRecord]: #eventrecord
 [Meta]: #meta
 [Object]: #object
-[ThreadChunk]: #threadchunk
+[SeqChunk]: #seqchunk
+[SeqId]: #seqid
 
 [Task]: common.md#task
 [TaskId]: common.md#taskid
