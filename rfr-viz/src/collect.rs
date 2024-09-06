@@ -187,7 +187,12 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
         println!("--------------------------------");
         println!("Chunk: {:?}", chunk.header());
         for seq_chunk in chunk.seq_chunks() {
-            println!("- Seqence Chunk:");
+            println!(
+                "- Sequence Chunk: {:?} ({:?} - {:?})",
+                seq_chunk.header.seq_id,
+                seq_chunk.header.earliest_timestamp,
+                seq_chunk.header.latest_timestamp
+            );
             println!("  - Objects:");
             for object in &seq_chunk.objects {
                 println!("    - {object:?}");

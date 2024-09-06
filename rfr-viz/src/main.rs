@@ -61,6 +61,7 @@ fn write_viz(writer: impl io::Write, info: RecordingInfo, name: String) {
     for row in info.task_rows {
         let name = match row.task.task_kind {
             TaskKind::BlockOn => "<em>block_on</em>",
+            TaskKind::Blocking if row.task.task_name.is_empty() => "<em>Blocking</em>",
             _ => row.task.task_name.as_str(),
         };
 

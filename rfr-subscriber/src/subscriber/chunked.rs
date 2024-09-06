@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -9,8 +8,9 @@ use tracing::{span, subscriber::Interest, Event, Metadata, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use rfr::{
-    chunked::{self, AbsTimestampSecs, ChunkedWriter},
-    common, rec,
+    chunked::{self, ChunkedWriter},
+    common,
+    rec::{self, AbsTimestamp},
 };
 
 use crate::subscriber::common::{
@@ -104,60 +104,18 @@ impl RfrChunkedLayer {
             .collect()
     }
 
-    fn write_record(&self, timestamp: rec::AbsTimestamp, event: common::Event) {
-        thread_local! {
-            pub static CHUNK_BUFFER: RefCell<Option<Arc<chunked::SeqChunkBuffer>>>
-                = const { RefCell::new(None) };
-        }
-
-        CHUNK_BUFFER.with_borrow_mut(|chunk_buffer| {
-            let current_buffer = self.current_chunk_buffer(chunk_buffer, timestamp.clone());
-            let record = chunked::EventRecord {
-                meta: chunked::Meta {
-                    timestamp: current_buffer.chunk_timestamp(timestamp),
-                },
-                event,
-            };
-            current_buffer.append_record(record, |task_ids| self.get_objects(task_ids));
-        });
-    }
-
-    fn current_chunk_buffer<'a>(
-        &self,
-        local_buffer: &'a mut Option<Arc<chunked::SeqChunkBuffer>>,
-        timestamp: rec::AbsTimestamp,
-    ) -> &'a mut Arc<chunked::SeqChunkBuffer> {
-        let base_time = AbsTimestampSecs::from(timestamp.clone());
-        let buffer = local_buffer.get_or_insert_with(|| self.new_chunk(timestamp.clone()));
-
-        match base_time.cmp(&buffer.base_time()) {
-            std::cmp::Ordering::Equal => {
-                // Stored chunk is the current one, do nothing
-            }
-            std::cmp::Ordering::Greater => {
-                // Stored chunk is old, we need a new one
-                *buffer = self.new_chunk(timestamp.clone());
-            }
-            std::cmp::Ordering::Less => {
-                // Stored chunk is from the future? This is invalid!
-                panic!(
-                    "Current base time is {base_time:?}, but stored base time is \
-                    {buffer_base_time:?}, which is from the future!",
-                    buffer_base_time = buffer.base_time()
-                );
-            }
-        }
-
-        buffer
-    }
-
-    fn new_chunk(&self, timestamp: rec::AbsTimestamp) -> Arc<chunked::SeqChunkBuffer> {
-        let new_chunk = Arc::new(chunked::SeqChunkBuffer::new(timestamp));
+    fn write_event(&self, timestamp: rec::AbsTimestamp, event: common::Event) {
         self.writer_handle
             .writer
-            .register_chunk(Arc::clone(&new_chunk));
-
-        new_chunk
+            .with_seq_chunk_buffer(timestamp.clone(), |current_buffer| {
+                let record = chunked::EventRecord {
+                    meta: chunked::Meta {
+                        timestamp: current_buffer.chunk_timestamp(&timestamp),
+                    },
+                    event,
+                };
+                current_buffer.append_record(record, |task_ids| self.get_objects(task_ids));
+            });
     }
 }
 
@@ -186,7 +144,7 @@ where
     }
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let timestamp = AbsTimestamp::now();
         let callsite = CallsiteId::from(attrs.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
@@ -230,7 +188,7 @@ where
                     });
                     self.new_object(spawn.task_id, task_event);
                     let new_event = common::Event::NewTask { id: task_id };
-                    self.write_record(rec_meta.timestamp, new_event);
+                    self.write_event(timestamp, new_event);
                 }
             }
             _ => {
@@ -240,7 +198,7 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let timestamp = AbsTimestamp::now();
         let callsite = CallsiteId::from(event.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
@@ -280,7 +238,7 @@ where
                         WakerOp::Drop => common::Event::WakerDrop { waker },
                     };
 
-                    self.write_record(rec_meta.timestamp, waker_event);
+                    self.write_event(timestamp, waker_event);
                 }
             }
             _ => {
@@ -290,7 +248,7 @@ where
     }
 
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let timestamp = AbsTimestamp::now();
         let span = ctx.span(id).expect("enter {id:?} not found, this is a bug");
         let extensions = span.extensions();
         if let Some(task_id) = extensions.get::<TaskId>() {
@@ -299,13 +257,13 @@ where
                 let task_id = common::TaskId::from(task_id.0);
                 let poll_start = common::Event::TaskPollStart { id: task_id };
 
-                self.write_record(rec_meta.timestamp, poll_start);
+                self.write_event(timestamp, poll_start);
             }
         }
     }
 
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let timestamp = AbsTimestamp::now();
         let span = ctx.span(id).expect("exit {id:?} not found, this is a bug");
         let extensions = span.extensions();
         if let Some(task_id) = extensions.get::<TaskId>() {
@@ -314,13 +272,13 @@ where
                 let task_id = common::TaskId::from(task_id.0);
                 let poll_end = common::Event::TaskPollEnd { id: task_id };
 
-                self.write_record(rec_meta.timestamp, poll_end);
+                self.write_event(timestamp, poll_end);
             }
         }
     }
 
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let timestamp = AbsTimestamp::now();
         let span = ctx
             .span(&id)
             .expect("close {id:?} not found, this is a bug");
@@ -332,7 +290,7 @@ where
                     id: common::TaskId::from(task_id.0),
                 };
 
-                self.write_record(rec_meta.timestamp, task_drop);
+                self.write_event(timestamp, task_drop);
                 self.drop_object(task_id);
             }
         }

@@ -1,5 +1,5 @@
 use rfr::{
-    chunked::{EventRecord, Meta, Object, SeqChunk, SeqChunkBuffer},
+    chunked::{ChunkInterval, EventRecord, Meta, Object, SeqChunk, SeqChunkBuffer},
     common::{Event, Task, TaskId, TaskKind},
     rec::AbsTimestamp,
 };
@@ -8,12 +8,15 @@ use rfr::{
 fn round_trip() {
     let mut buffer = Vec::new();
 
-    let seq_chunk_buffer = SeqChunkBuffer::new(AbsTimestamp::now());
+    let seq_chunk_buffer = SeqChunkBuffer::new(ChunkInterval::from_timestamp_and_period(
+        AbsTimestamp::now(),
+        1_000_000,
+    ));
 
     let task = test_task(2);
     let event = EventRecord {
         meta: Meta {
-            timestamp: seq_chunk_buffer.chunk_timestamp(AbsTimestamp::now()),
+            timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
         event: Event::NewTask { id: task.task_id },
     };
@@ -25,10 +28,14 @@ fn round_trip() {
     assert!(!buffer.is_empty());
 
     let seq_chunk: SeqChunk = postcard::from_bytes(buffer.as_mut_slice()).unwrap();
+    let header = seq_chunk.header;
 
-    assert_eq!(seq_chunk.seq_id, seq_chunk_buffer.seq_id());
-    assert_eq!(seq_chunk.start_time, seq_chunk_buffer.start_time());
-    assert_eq!(seq_chunk.end_time, seq_chunk_buffer.end_time());
+    assert_eq!(header.seq_id, seq_chunk_buffer.seq_id());
+    assert_eq!(
+        header.earliest_timestamp,
+        seq_chunk_buffer.earliest_timestamp()
+    );
+    assert_eq!(header.latest_timestamp, seq_chunk_buffer.latest_timestamp());
 
     assert_eq!(seq_chunk.objects.len(), 1);
     assert_eq!(seq_chunk.objects[0], Object::Task(task));
@@ -39,11 +46,14 @@ fn round_trip() {
 
 #[test]
 fn skip_events_with_unknown_objects() {
-    let seq_chunk_buffer = SeqChunkBuffer::new(AbsTimestamp::now());
+    let seq_chunk_buffer = SeqChunkBuffer::new(ChunkInterval::from_timestamp_and_period(
+        AbsTimestamp::now(),
+        1_000_000,
+    ));
 
     let event = EventRecord {
         meta: Meta {
-            timestamp: seq_chunk_buffer.chunk_timestamp(AbsTimestamp::now()),
+            timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
         event: Event::NewTask {
             id: TaskId::from(5),
@@ -58,12 +68,15 @@ fn skip_events_with_unknown_objects() {
 fn only_requests_object_once() {
     let mut buffer = Vec::new();
 
-    let seq_chunk_buffer = SeqChunkBuffer::new(AbsTimestamp::now());
+    let seq_chunk_buffer = SeqChunkBuffer::new(ChunkInterval::from_timestamp_and_period(
+        AbsTimestamp::now(),
+        1_000_000,
+    ));
 
     let task = test_task(2);
     let event_1 = EventRecord {
         meta: Meta {
-            timestamp: seq_chunk_buffer.chunk_timestamp(AbsTimestamp::now()),
+            timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
         event: Event::NewTask { id: task.task_id },
     };
@@ -76,7 +89,7 @@ fn only_requests_object_once() {
 
     let event_2 = EventRecord {
         meta: Meta {
-            timestamp: seq_chunk_buffer.chunk_timestamp(AbsTimestamp::now()),
+            timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
         event: Event::TaskDrop { id: task.task_id },
     };

@@ -20,7 +20,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    chunked::{AbsTimestampSecs, ChunkTimestamp, EventRecord, Object},
+    chunked::{AbsTimestampSecs, ChunkInterval, ChunkTimestamp, EventRecord, Object},
     common::{Event, TaskId},
     rec::AbsTimestamp,
 };
@@ -37,11 +37,19 @@ use crate::{
 /// A sequence generally models a single thread and the events emitted from within it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SeqChunk {
-    pub seq_id: SeqId,
-    pub start_time: AbsTimestamp,
-    pub end_time: AbsTimestamp,
+    pub header: SeqChunkHeader,
     pub objects: Vec<Object>,
     pub events: Vec<EventRecord>,
+}
+
+/// Sequence chunk header
+///
+/// The header data for a sequence chunk.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SeqChunkHeader {
+    pub seq_id: SeqId,
+    pub earliest_timestamp: ChunkTimestamp,
+    pub latest_timestamp: ChunkTimestamp,
 }
 
 /// Sequence identifier
@@ -82,15 +90,13 @@ impl SeqId {
 
 #[derive(Debug)]
 pub struct SeqChunkBuffer {
-    seq_id: SeqId,
-    base_time: AbsTimestampSecs,
-    start_time: AbsTimestamp,
-    end_time: AbsTimestamp,
+    interval: ChunkInterval,
     buffer: Mutex<Buffer>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Buffer {
+    header: SeqChunkHeader,
     objects: HashMap<TaskId, Vec<u8>>,
     missing_objects: HashSet<TaskId>,
     event_count: usize,
@@ -98,30 +104,42 @@ struct Buffer {
 }
 
 impl SeqChunkBuffer {
-    pub fn new(now: AbsTimestamp) -> Self {
-        Self {
-            seq_id: SeqId::current(),
-            base_time: now.clone().into(),
-            start_time: now.clone(),
-            end_time: now,
-            buffer: Default::default(),
-        }
+    pub fn new(interval: ChunkInterval) -> Self {
+        let buffer = Mutex::new(Buffer {
+            header: SeqChunkHeader {
+                seq_id: SeqId::current(),
+                earliest_timestamp: interval.end_time,
+                latest_timestamp: interval.start_time,
+            },
+            objects: HashMap::new(),
+            missing_objects: HashSet::new(),
+            event_count: 0,
+            events: Vec::new(),
+        });
+        Self { interval, buffer }
     }
 
-    pub fn seq_id(&self) -> SeqId {
-        self.seq_id
+    pub fn interval(&self) -> &ChunkInterval {
+        &self.interval
     }
 
     pub fn base_time(&self) -> AbsTimestampSecs {
-        self.base_time
+        self.interval.base_time
     }
 
-    pub fn start_time(&self) -> AbsTimestamp {
-        self.start_time.clone()
+    pub fn seq_id(&self) -> SeqId {
+        let buffer = self.buffer.lock().expect("poisoned");
+        buffer.header.seq_id
     }
 
-    pub fn end_time(&self) -> AbsTimestamp {
-        self.end_time.clone()
+    pub fn earliest_timestamp(&self) -> ChunkTimestamp {
+        let buffer = self.buffer.lock().expect("poisoned");
+        buffer.header.earliest_timestamp
+    }
+
+    pub fn latest_timestamp(&self) -> ChunkTimestamp {
+        let buffer = self.buffer.lock().expect("poisoned");
+        buffer.header.latest_timestamp
     }
 
     pub fn event_count(&self) -> usize {
@@ -131,12 +149,13 @@ impl SeqChunkBuffer {
 
     /// Converts an absolute timestamp into a chunk timestamp, using the base time of the parent
     /// chunk of this sequence chunk.
-    pub fn chunk_timestamp(&self, timestamp: AbsTimestamp) -> ChunkTimestamp {
-        let secs = timestamp.secs.saturating_sub(self.base_time.secs);
-        let micros = (secs * 1_000_000) + timestamp.subsec_micros as u64;
-        ChunkTimestamp::new(micros)
+    pub fn chunk_timestamp(&self, timestamp: &AbsTimestamp) -> ChunkTimestamp {
+        ChunkTimestamp::from_base_and_timestamp(self.base_time(), timestamp)
     }
 
+    // FIXME(hds): modify to take an absolute timestamp and an event instead of an EventRecord.
+    // Then this function will convert the timestamp to a chunked timestamp and validate it at the
+    // same time. If it is invalid, an error will be returned.
     pub fn append_record<F>(&self, record: EventRecord, get_objects: F)
     where
         F: FnOnce(&[TaskId]) -> Vec<Option<Object>>,
@@ -188,6 +207,10 @@ impl SeqChunkBuffer {
             }
         }
 
+        if buffer.event_count == 0 {
+            buffer.header.earliest_timestamp = record.meta.timestamp;
+        }
+        buffer.header.latest_timestamp = record.meta.timestamp;
         postcard::to_io(&record, &mut buffer.events).unwrap();
         buffer.event_count += 1;
     }
@@ -196,9 +219,7 @@ impl SeqChunkBuffer {
         let mut writer = writer;
         let buffer = self.buffer.lock().expect("poisoned");
 
-        postcard::to_io(&self.seq_id, &mut writer).unwrap();
-        postcard::to_io(&self.start_time, &mut writer).unwrap();
-        postcard::to_io(&self.end_time, &mut writer).unwrap();
+        postcard::to_io(&buffer.header, &mut writer).unwrap();
 
         postcard::to_io(&buffer.objects.len(), &mut writer).unwrap();
         for object_data in buffer.objects.values() {

@@ -24,7 +24,7 @@ fn current_software_version() -> FormatIdentifier {
 /// A timestamp measured from the [`UNIX_EPOCH`].
 ///
 /// This timestamp is absolute as it has an external reference.
-#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub struct AbsTimestamp {
     /// Whole seconds component of the timestamp, measured from the [`UNIX_EPOCH`].
     pub secs: u64,
