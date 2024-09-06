@@ -1,4 +1,4 @@
-use std::{error, fmt};
+use std::{error, fmt, ptr};
 
 use tracing::{
     field::{Field, Visit},
@@ -94,7 +94,7 @@ pub(super) struct CallsiteId(u64);
 
 impl From<&Metadata<'_>> for CallsiteId {
     fn from(metadata: &Metadata<'_>) -> Self {
-        Self(std::ptr::from_ref(metadata) as u64)
+        Self(ptr::from_ref(metadata) as u64)
     }
 }
 
