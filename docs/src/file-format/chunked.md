@@ -44,11 +44,50 @@ read from the middle of an execution. The structure is the following:
 | Element            | Representation                       |
 |--------------------|--------------------------------------|
 | format\_identifier | [`string`] (see [Format Identifier]) |
-| base\_time         | [AbsTimestampSecs]                   |
-| start\_time        | [ChunkTimestamp]                     |
-| end\_time          | [ChunkTimestamp]                     |
+| header             | [ChunkHeader]                        |
 | seq\_chunks        | \[[SeqChunk]\]                       |
 
+### ChunkHeader
+
+The chunk header contains metadata for the chunk.
+
+| Element             | Representation     |
+|---------------------|--------------------|
+| interval            | [ChunkInterval]   |
+| earliest\_timestamp | [ChunkTimestamp]   |
+| latest\_timestamp   | [ChunkTimestamp]   |
+
+The earliest timestamp and latest timestamp are the minimum and the maximum of the same value in the
+[SeqChunkHeader] for all the sequence chunks that make up this chunk. As such, they are the minimum
+and maximum times of the recorded events in this chunk as a whole.
+
+These timestamps are relative to the base time in the interval.
+
+### ChunkInterval
+
+A chunk interval describes the period of time that a chunk represents. Only a single chunk is
+responsible for any given instant in time.
+
+The time period a chunk interval represents should either be a whole number of seconds or it should
+divide 1 second without remainder.
+
+| Element             | Representation     |
+|---------------------|--------------------|
+| base\_time          | [AbsTimestampSecs] |
+| start\_time         | [ChunkTimestamp]   |
+| end\_time           | [ChunkTimestamp]   |
+
+The base time is the absolute time which is used as a reference for all chunk internal times. The
+base time has seconds precision, so all chunk timestamps will start on a second boundary.
+
+The remaining times in the interval are chunk timestamps and so are relative to the base time.
+
+The start and end times represent the time period that a chunk covers within the recording. All
+events recorded that occur on or after the start time and strictly before the end time will be
+included in this chunk and not in any other chunk.
+
+Note that while a chunk's base time is always measured in whole seconds, the chunk may have start
+and end times which aren't, for example if the chunk period is less than 1 second.
 
 ### AbsTimestampSecs
 
@@ -86,18 +125,26 @@ parent chunk.
 
 | Element     | Representation    |
 |-------------|-------------------|
-| seq\_id     | [SeqId]           |
-| start\_time | [ChunkTimestamp]  |
-| end\_time   | [ChunkTimestamp]  |
+| header      | [SeqChunkHeader]  |
 | objects     | \[[Object]\]      |
 | events      | \[[EventRecord]\] |
-
-The start time and end time are the minimum and maximum times of the recorded events in this
-sequence chunk respectively.
 
 The objects array contains all objects referenced by events in this sequence chunk. The events
 contain the occurences during the time period. This structure is different from the [streaming] file
 format where events and objects are mixed in a single stream of records.
+
+### SeqChunkHeader
+
+Header information for a sequence chunk.
+
+| Element             | Representation    |
+|---------------------|-------------------|
+| seq\_id             | [SeqId]           |
+| earliest\_timestamp | [ChunkTimestamp]  |
+| latest\_timestamp   | [ChunkTimestamp]  |
+
+The earliest timestamp and latest timestamp are the minimum and maximum times of the recorded events
+in this sequence chunk respectively.
 
 ### SeqId
 
@@ -156,11 +203,14 @@ union hierarchy costs an extra byte (for unions with up to 127 variants).
 [Format Identifier]: #format-identifier
 
 [AbsTimestampSecs]: #abstimestampsecs
+[ChunkHeader]: #chunkheader
+[ChunkInterval]: #chunkinterval
 [ChunkTimestamp]: #chunktimestamp
 [EventRecord]: #eventrecord
 [Meta]: #meta
 [Object]: #object
 [SeqChunk]: #seqchunk
+[SeqChunkHeader]: #seqchunkheader
 [SeqId]: #seqid
 
 [Task]: common.md#task

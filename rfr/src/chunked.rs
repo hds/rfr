@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    cell::RefCell,
     error, fmt, fs,
     io::{self, SeekFrom},
     path::{Path, PathBuf},
@@ -34,7 +34,11 @@ pub struct ChunkedWriter {
     root_dir: String,
     base_time: AbsTimestampSecs,
 
-    chunks: Mutex<Vec<Arc<SeqChunkBuffer>>>,
+    /// The length of time a chunk is "responsible" for. This value must either be a multiple of
+    /// seconds (multiple of 1_000_000) or a divisor of a whole second (divisor of 1_000_000).
+    chunk_period_micros: u32,
+
+    chunk_buffers: Mutex<Vec<ChunkBuffer>>,
 }
 
 impl ChunkedWriter {
@@ -48,10 +52,13 @@ impl ChunkedWriter {
         fs::create_dir_all(&root_dir).unwrap();
         Self::write_meta(&root_dir, &header);
 
+        // By default, chunks contain 1 second of execution time.
+        let chunk_period_micros = 1_000_000;
         let writer = Self {
             root_dir,
             base_time,
-            chunks: Mutex::new(Vec::new()),
+            chunk_period_micros,
+            chunk_buffers: Mutex::new(Vec::new()),
         };
 
         let base_time = writer.base_time;
@@ -98,62 +105,90 @@ impl ChunkedWriter {
             .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S")))
     }
 
-    pub fn register_chunk(&self, chunk: Arc<SeqChunkBuffer>) {
-        let mut chunks = self.chunks.lock().expect("poisoned");
+    pub fn with_seq_chunk_buffer<F>(&self, timestamp: AbsTimestamp, f: F)
+    where
+        F: FnOnce(&SeqChunkBuffer),
+    {
+        thread_local! {
+            pub static SEQ_CHUNK_BUFFER: RefCell<Option<Arc<SeqChunkBuffer>>>
+                = const { RefCell::new(None) };
+        }
 
-        chunks.push(chunk);
+        SEQ_CHUNK_BUFFER.with_borrow_mut(|seq_chunk_buffer| {
+            let current_buffer = self.current_seq_chunk_buffer(seq_chunk_buffer, timestamp.clone());
+            f(current_buffer);
+        });
+    }
+
+    fn current_seq_chunk_buffer<'a>(
+        &self,
+        local_buffer: &'a mut Option<Arc<SeqChunkBuffer>>,
+        timestamp: rec::AbsTimestamp,
+    ) -> &'a Arc<SeqChunkBuffer> {
+        let interval = ChunkInterval::from_timestamp_and_period(
+            timestamp.clone(),
+            self.chunk_period_micros as u64,
+        );
+        let seq_chunk_buffer =
+            local_buffer.get_or_insert_with(|| self.create_seq_chunk_buffer(interval.clone()));
+
+        if seq_chunk_buffer.interval() != &interval {
+            // Stored sequence chunk is not for this interval, create a new sequence chunk.
+            *seq_chunk_buffer = self.create_seq_chunk_buffer(interval);
+        }
+
+        seq_chunk_buffer
+    }
+
+    fn create_seq_chunk_buffer(&self, interval: ChunkInterval) -> Arc<SeqChunkBuffer> {
+        let mut chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
+        let chunk_buffer = chunk_buffers
+            .iter_mut()
+            .find(|cb| cb.header.interval == interval);
+        match chunk_buffer {
+            Some(chunk_buffer) => chunk_buffer.new_seq_chunk_buffer(),
+            None => {
+                let mut new_chunk_buffer = ChunkBuffer::new(interval.clone());
+                let seq_chunk_buffer = new_chunk_buffer.new_seq_chunk_buffer();
+                chunk_buffers.push(new_chunk_buffer);
+                seq_chunk_buffer
+            }
+        }
     }
 
     pub fn write(&self) {
-        let mut chunk_buffers: HashMap<AbsTimestampSecs, ChunkBuffer> = HashMap::new();
-        let mut seq_chunks = self.chunks.lock().expect("poisoned");
+        let chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
 
-        for seq_chunk in &*seq_chunks {
-            chunk_buffers
-                .entry(seq_chunk.base_time())
-                .and_modify(|chunk| chunk.push_seq_chunk(Arc::clone(seq_chunk)))
-                .or_insert_with(|| ChunkBuffer::with_first_seq_chunk(Arc::clone(seq_chunk)));
-        }
-
-        for chunk_buffer in chunk_buffers.into_values() {
-            let writer = self.writer_for_chunk(&chunk_buffer);
+        for chunk_buffer in chunk_buffers.iter() {
+            let writer = self.writer_for_chunk(chunk_buffer);
             chunk_buffer.write(writer);
         }
-
-        seq_chunks.clear();
     }
 
     fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
-        fs::File::create(self.chunk_path(&chunk.base_time)).unwrap()
+        fs::File::create(self.chunk_path(&chunk.header.interval.base_time)).unwrap()
     }
 }
 
 #[derive(Debug)]
 pub struct ChunkBuffer {
-    base_time: AbsTimestampSecs,
-    start_time: AbsTimestamp,
-    end_time: AbsTimestamp,
+    header: ChunkHeader,
 
     seq_chunks: Vec<Arc<SeqChunkBuffer>>,
 }
 
 impl ChunkBuffer {
-    fn with_first_seq_chunk(seq_chunk: Arc<SeqChunkBuffer>) -> Self {
+    fn new(interval: ChunkInterval) -> Self {
         Self {
-            base_time: seq_chunk.base_time(),
-            start_time: seq_chunk.start_time(),
-            end_time: seq_chunk.end_time(),
-            seq_chunks: vec![seq_chunk],
+            header: ChunkHeader::new(interval),
+            seq_chunks: Vec::new(),
         }
     }
 
-    fn push_seq_chunk(&mut self, seq_chunk: Arc<SeqChunkBuffer>) {
-        assert_eq!(self.base_time, seq_chunk.base_time());
-
-        self.start_time = self.start_time.clone().min(seq_chunk.start_time());
-        self.end_time = self.end_time.clone().max(seq_chunk.end_time());
-
-        self.seq_chunks.push(seq_chunk);
+    fn new_seq_chunk_buffer(&mut self) -> Arc<SeqChunkBuffer> {
+        let seq_chunk_buffer = Arc::new(SeqChunkBuffer::new(self.header.interval.clone()));
+        self.seq_chunks.push(Arc::clone(&seq_chunk_buffer));
+        seq_chunk_buffer
     }
 
     fn write(&self, writer: impl io::Write) {
@@ -162,9 +197,22 @@ impl ChunkBuffer {
         let version = format!("{}", current_software_version());
         postcard::to_io(&version, &mut writer).unwrap();
 
-        postcard::to_io(&self.base_time, &mut writer).unwrap();
-        postcard::to_io(&self.start_time, &mut writer).unwrap();
-        postcard::to_io(&self.end_time, &mut writer).unwrap();
+        let (earliest_timestamp, latest_timestamp) = self
+            .seq_chunks
+            .iter()
+            .map(|seq_chunk| (seq_chunk.earliest_timestamp(), seq_chunk.latest_timestamp()))
+            .fold(
+                (self.header.earliest_timestamp, self.header.latest_timestamp),
+                |(acc_earliest, acc_latest), (earliest, latest)| {
+                    (acc_earliest.min(earliest), acc_latest.max(latest))
+                },
+            );
+        let header = ChunkHeader {
+            interval: self.header.interval.clone(),
+            earliest_timestamp,
+            latest_timestamp,
+        };
+        postcard::to_io(&header, &mut writer).unwrap();
 
         postcard::to_io(&self.seq_chunks.len(), &mut writer).unwrap();
         for seq_chunk in &self.seq_chunks {
@@ -209,15 +257,23 @@ impl AbsTimestampSecs {
 // A chunk timestamp represents the time of an event with respect to the chunk's base time. It is
 // stored as the number of microseconds since the base time. All events within a chunk must occur
 // at the base time or afterwards.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq, Deserialize, Serialize)]
 pub struct ChunkTimestamp {
     /// Microseconds since the chunk's base time
     pub micros: u64,
 }
 
 impl ChunkTimestamp {
+    const ZERO: ChunkTimestamp = ChunkTimestamp { micros: 0 };
+
     pub fn new(micros: u64) -> Self {
         Self { micros }
+    }
+
+    pub fn from_base_and_timestamp(base_time: AbsTimestampSecs, timestamp: &AbsTimestamp) -> Self {
+        let secs = timestamp.secs.saturating_sub(base_time.secs);
+        let micros = (secs * 1_000_000) + timestamp.subsec_micros as u64;
+        Self::new(micros)
     }
 }
 
@@ -300,13 +356,7 @@ impl Chunk {
     }
 
     pub fn abs_timestamp(&self, chunk_timestamp: &ChunkTimestamp) -> AbsTimestamp {
-        let chunk_timestamp_secs = chunk_timestamp.micros / 1_000_000;
-        let chunk_timestamp_subsec_micros = (chunk_timestamp.micros % 1_000_000) as u32;
-
-        AbsTimestamp {
-            secs: self.header.base_time.secs + chunk_timestamp_secs,
-            subsec_micros: chunk_timestamp_subsec_micros,
-        }
+        abs_timestamp(self.header.interval.base_time, chunk_timestamp)
     }
 
     fn try_from_io<IO>(reader: IO) -> Result<Self, ChunkReadError>
@@ -398,6 +448,16 @@ impl Chunk {
     }
 }
 
+fn abs_timestamp(base_time: AbsTimestampSecs, chunk_timestamp: &ChunkTimestamp) -> AbsTimestamp {
+    let chunk_timestamp_secs = chunk_timestamp.micros / 1_000_000;
+    let chunk_timestamp_subsec_micros = (chunk_timestamp.micros % 1_000_000) as u32;
+
+    AbsTimestamp {
+        secs: base_time.secs + chunk_timestamp_secs,
+        subsec_micros: chunk_timestamp_subsec_micros,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ChunkReadError {
     Unimplemented,
@@ -417,22 +477,61 @@ impl error::Error for ChunkReadError {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChunkHeader {
-    base_time: AbsTimestampSecs,
-    start_time: AbsTimestamp,
-    end_time: AbsTimestamp,
+    pub interval: ChunkInterval,
+
+    pub earliest_timestamp: ChunkTimestamp,
+    pub latest_timestamp: ChunkTimestamp,
 }
 
 impl ChunkHeader {
-    pub fn base_time(&self) -> &AbsTimestampSecs {
-        &self.base_time
-    }
+    fn new(interval: ChunkInterval) -> Self {
+        let earliest_timestamp = interval.end_time;
+        let latest_timestamp = interval.start_time;
 
-    pub fn start_time(&self) -> &AbsTimestamp {
-        &self.start_time
+        Self {
+            interval,
+            earliest_timestamp,
+            latest_timestamp,
+        }
     }
+}
 
-    pub fn end_time(&self) -> &AbsTimestamp {
-        &self.end_time
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChunkInterval {
+    base_time: AbsTimestampSecs,
+    start_time: ChunkTimestamp,
+    end_time: ChunkTimestamp,
+}
+
+impl ChunkInterval {
+    pub fn from_timestamp_and_period(timestamp: AbsTimestamp, period_micros: u64) -> Self {
+        let (base_time, start_time) = if period_micros > 1_000_000 {
+            let secs = AbsTimestampSecs::from(timestamp.clone());
+            (
+                AbsTimestampSecs {
+                    secs: secs.secs - (secs.secs % (period_micros / 1_000_000)),
+                },
+                // Since the period is in whole seconds, the start offset is always 0.
+                ChunkTimestamp::ZERO,
+            )
+        } else {
+            (
+                AbsTimestampSecs::from(timestamp.clone()),
+                // Calculate the start time (offset) based on the period.
+                ChunkTimestamp::new(
+                    (timestamp.subsec_micros - (timestamp.subsec_micros % period_micros as u32))
+                        as u64,
+                ),
+            )
+        };
+
+        let end_time = ChunkTimestamp::new(start_time.micros + period_micros);
+
+        Self {
+            base_time,
+            start_time,
+            end_time,
+        }
     }
 }
 
@@ -529,7 +628,7 @@ pub fn from_path(recording_path: String) -> Result<Recording, RecordingReadError
     }
 
     let mut chunks = Vec::new();
-    for entry in WalkDir::new(recording_path) {
+    for entry in WalkDir::new(recording_path).sort_by_file_name() {
         let entry = entry.map_err(RecordingReadError::FilesystemError)?;
         if !entry.file_type().is_file() {
             // Skip anything that isn't a file, we're not interested in that.
