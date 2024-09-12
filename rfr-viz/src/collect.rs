@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
+use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
 
 use rfr::{
     chunked,
@@ -84,6 +84,7 @@ pub(crate) struct RecordingInfo {
     pub(crate) end_time: rec::WinTimestamp,
 }
 
+#[derive(Debug)]
 pub(crate) struct TaskEvents {
     pub(crate) task: Task,
     pub(crate) events: Vec<EventRecord>,
@@ -135,36 +136,16 @@ impl TaskEventsCollect for chunked::Recording {
     }
 
     fn earliest_timestamp(&mut self) -> Option<AbsTimestamp> {
-        self.chunks_lossy().find_map(identity).and_then(|chunk| {
-            chunk
-                .seq_chunks()
-                .iter()
-                .filter_map(|seq_chunk| {
-                    seq_chunk
-                        .events
-                        .first()
-                        .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
-                })
-                .reduce(cmp::min)
-        })
+        self.chunks_lossy()
+            .find_map(identity)
+            .map(|chunk| chunk.abs_timestamp(&chunk.header().earliest_timestamp))
     }
 
     fn latest_timestamp(&mut self) -> Option<AbsTimestamp> {
         self.chunks_lossy()
             .rev()
             .find_map(identity)
-            .and_then(|chunk| {
-                chunk
-                    .seq_chunks()
-                    .iter()
-                    .filter_map(|seq_chunk| {
-                        seq_chunk
-                            .events
-                            .last()
-                            .map(|event| chunk.abs_timestamp(&event.meta.timestamp))
-                    })
-                    .reduce(cmp::max)
-            })
+            .map(|chunk| chunk.abs_timestamp(&chunk.header().latest_timestamp))
     }
 }
 
@@ -184,7 +165,7 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
     );
     for chunk in recording.chunks_lossy() {
         let Some(chunk) = chunk else { continue };
-        println!("--------------------------------");
+        println!("\n--------------------------------");
         println!("Chunk: {:?}", chunk.header());
         for seq_chunk in chunk.seq_chunks() {
             println!(
@@ -202,8 +183,8 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
                 println!("    - {events:?}");
             }
         }
-        println!("--------------------------------");
     }
+    println!("--------------------------------");
 
     create_recording_info(recording)
 }
@@ -212,19 +193,12 @@ fn create_recording_info(recording: impl TaskEventsCollect) -> Option<RecordingI
     let mut recording = recording;
 
     let start_timestamp = recording.earliest_timestamp()?;
-    println!("start timestamp: {start_timestamp:?}");
     let win_time_handle = WinTimeHandle::new(start_timestamp);
 
     let end_timestamp = recording.latest_timestamp()?;
     let end_time = win_time_handle.window_time(&end_timestamp);
 
     let tasks_events = recording.collect_into_tasks();
-    for task_events in &tasks_events {
-        println!("Task: {:?}", &task_events.task);
-        for event in &task_events.events {
-            println!(" - {:?}", event);
-        }
-    }
     if tasks_events.is_empty() {
         return None;
     }
@@ -250,8 +224,9 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
         for seq_chunk in chunk.seq_chunks() {
             for object in &seq_chunk.objects {
                 if let chunked::Object::Task(task) = object {
-                    let task_entry = TaskEvents::new(task.clone());
-                    tasks.insert(task.task_id, task_entry);
+                    tasks
+                        .entry(task.task_id)
+                        .or_insert_with(|| TaskEvents::new(task.clone()));
                 }
             }
 
@@ -278,7 +253,13 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
         }
     }
 
-    tasks.into_values().collect()
+    tasks
+        .into_values()
+        .map(|mut task_events| {
+            task_events.events.sort_by_key(|r| r.timestamp.clone());
+            task_events
+        })
+        .collect()
 }
 
 pub(crate) fn collect_into_tasks_from_streaming_records(
@@ -562,12 +543,6 @@ pub(crate) fn collect_into_rows(
                 _ => continue, // Skip unknown events
             }
         }
-
-        println!("\n======== {task:?} ========");
-        println!("task_events: {task_events:?}");
-        println!("wake_events: {wake_events:?}");
-        println!("spawn_event: {spawn_event:?}");
-        println!("======== ======== ======== ========");
 
         let mut task_sections = Vec::new();
         if task_events.is_empty() {

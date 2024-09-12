@@ -10,7 +10,8 @@ fn main() {
     let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
