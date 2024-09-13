@@ -118,5 +118,9 @@ jobs:
 
       - name: Spawn (chunked)
         run: cargo run -p rfr-subscriber --example spawn-chunked && cargo run -p rfr-viz -- chunked-spawn.rfr --name spawn-chunked
+
       - name: Ping pong (chunked)
         run: cargo run -p rfr-subscriber --example ping-pong-chunked && cargo run -p rfr-viz -- chunked-ping-pong.rfr --name ping-pong-chunked
+
+      - name: Barrier (chunked)
+        run: cargo run -p rfr-subscriber --example barrier && cargo run -p rfr-viz -- chunked-barrier.rfr --name barrier

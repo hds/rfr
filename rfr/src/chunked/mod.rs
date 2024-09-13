@@ -3,7 +3,11 @@ use std::{
     error, fmt, fs,
     io::{self, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{self, AtomicBool},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 
 use jiff::{tz::TimeZone, Timestamp, Zoned};
@@ -38,6 +42,8 @@ pub struct ChunkedWriter {
     /// seconds (multiple of 1_000_000) or a divisor of a whole second (divisor of 1_000_000).
     chunk_period_micros: u32,
 
+    closed: AtomicBool,
+
     chunk_buffers: Mutex<Vec<ChunkBuffer>>,
 }
 
@@ -58,6 +64,7 @@ impl ChunkedWriter {
             root_dir,
             base_time,
             chunk_period_micros,
+            closed: false.into(),
             chunk_buffers: Mutex::new(Vec::new()),
         };
 
@@ -65,6 +72,18 @@ impl ChunkedWriter {
         writer.ensure_dir(&base_time);
 
         writer
+    }
+
+    pub fn chunk_period_micros(&self) -> u32 {
+        self.chunk_period_micros
+    }
+
+    pub fn close(&self) {
+        self.closed.store(true, atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(atomic::Ordering::SeqCst)
     }
 
     fn write_meta(base_dir: &String, header: &MetaHeader) -> bool {
@@ -156,18 +175,75 @@ impl ChunkedWriter {
         }
     }
 
-    pub fn write(&self) {
+    /// Write all the completed chunks out to disk.
+    ///
+    /// A buffer period between now and the end of each chunk's interval is put in place to give
+    /// other threads time to finish writing to the sequence chunks. The buffer is on the order of
+    /// 100 milliseconds.
+    ///
+    /// Once each chunk is written to disk, it is discarded.
+    ///
+    /// This method is still not race-condition safe, despite the buffer. If a thread is taking a
+    /// very long time to prepare an even before calling [`with_seq_chunk_buffer`], then an event
+    /// may get lost.
+    ///
+    /// For this reason, [`with_seq_chunk_buffer`] should be called with a timestamp that is close
+    /// to the current time.
+    pub fn write_completed_chunks(&self) -> Result<Duration, WriteChunksError> {
+        let mut chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
+        let write_time_buffer = Duration::from_millis(150);
+        // Tell the caller to check back an extra 50 milliseconds after we would be ready to write
+        // the next interval.
+        let next_write_buffer = write_time_buffer + Duration::from_millis(50);
+
+        chunk_buffers.retain(|chunk_buffer| {
+            let end_time = chunk_buffer.header.interval.abs_end_time();
+            let since_completion = AbsTimestamp::now()
+                .as_duration_since_epoch()
+                .saturating_sub(end_time.as_duration_since_epoch());
+            if since_completion > write_time_buffer {
+                let writer = self.writer_for_chunk(chunk_buffer);
+                // TODO(hds): Check for errors
+                chunk_buffer.write(writer);
+                // TODO(hds): Perhaps retain the completed sequence chunks to avoid allocating again?
+                false
+            } else {
+                true
+            }
+        });
+
+        let now = AbsTimestamp::now();
+        let interval =
+            ChunkInterval::from_timestamp_and_period(now.clone(), self.chunk_period_micros as u64);
+
+        let next_write_in = (interval.abs_end_time().as_duration_since_epoch() + next_write_buffer)
+            .saturating_sub(now.as_duration_since_epoch());
+        Ok(next_write_in)
+    }
+
+    /// Write all stored chunks to disk.
+    ///
+    /// The chunks are not discarded after being written. If further events are written to the
+    /// contained sequence chunks, then they can be written to disk at a later time with subsequent
+    /// calls to [`write_completed_chunks`] or [`write_all_chunks`].
+    pub fn write_all_chunks(&self) {
         let chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
 
-        for chunk_buffer in chunk_buffers.iter() {
+        chunk_buffers.iter().for_each(|chunk_buffer| {
             let writer = self.writer_for_chunk(chunk_buffer);
             chunk_buffer.write(writer);
-        }
+        });
     }
 
     fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
         fs::File::create(self.chunk_path(&chunk.header.interval.base_time)).unwrap()
     }
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum WriteChunksError {
+    FileOpenFailed,
 }
 
 #[derive(Debug)]
@@ -270,10 +346,42 @@ impl ChunkTimestamp {
         Self { micros }
     }
 
+    /// Create a new chunk timestamp from a base time and an absolute timestamp.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rfr::{chunked::{AbsTimestampSecs, ChunkTimestamp}, rec::AbsTimestamp};
+    /// #
+    /// let now = AbsTimestamp::now();
+    /// let base_time = AbsTimestampSecs::from(now.clone());
+    /// let chunk_ts = ChunkTimestamp::from_base_and_timestamp(base_time, &now);
+    ///
+    /// # let also_now = chunk_ts.to_abs_timestamp(base_time);
+    /// # assert_eq!(now, also_now);
+    /// ```
     pub fn from_base_and_timestamp(base_time: AbsTimestampSecs, timestamp: &AbsTimestamp) -> Self {
         let secs = timestamp.secs.saturating_sub(base_time.secs);
         let micros = (secs * 1_000_000) + timestamp.subsec_micros as u64;
         Self::new(micros)
+    }
+
+    /// Convert to an absolute timestamp, given the base timestamp for this chunk.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rfr::{chunked::{AbsTimestampSecs, ChunkTimestamp}, rec::AbsTimestamp};
+    /// #
+    /// # let now = AbsTimestamp::now();
+    /// # let base_time = AbsTimestampSecs::from(now.clone());
+    /// let chunk_ts = ChunkTimestamp::from_base_and_timestamp(base_time, &now);
+    ///
+    /// let also_now = chunk_ts.to_abs_timestamp(base_time);
+    /// # assert_eq!(now, also_now);
+    /// ```
+    pub fn to_abs_timestamp(&self, base_time: AbsTimestampSecs) -> AbsTimestamp {
+        abs_timestamp(base_time, self)
     }
 }
 
@@ -532,6 +640,38 @@ impl ChunkInterval {
             start_time,
             end_time,
         }
+    }
+
+    /// The start time of the interval as an absolute timestamp
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rfr::{chunked::ChunkInterval, rec::AbsTimestamp};
+    /// let now = AbsTimestamp::now();
+    /// let interval = ChunkInterval::from_timestamp_and_period(now.clone(), 1_000_000);
+    ///
+    /// let start_time = interval.abs_start_time();
+    /// assert!(start_time <= now);
+    /// ```
+    pub fn abs_start_time(&self) -> AbsTimestamp {
+        self.start_time.to_abs_timestamp(self.base_time)
+    }
+
+    /// The end time of the interval as an absolute timestamp
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rfr::{chunked::ChunkInterval, rec::AbsTimestamp};
+    /// let now = AbsTimestamp::now();
+    /// let interval = ChunkInterval::from_timestamp_and_period(now.clone(), 1_000_000);
+    ///
+    /// let end_time = interval.abs_end_time();
+    /// assert!(end_time >= now);
+    /// ```
+    pub fn abs_end_time(&self) -> AbsTimestamp {
+        self.end_time.to_abs_timestamp(self.base_time)
     }
 }
 
