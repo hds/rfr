@@ -29,7 +29,7 @@ pub struct Flusher {
 
 impl Flusher {
     pub fn flush(&self) {
-        self.writer.write();
+        self.writer.write_all_chunks();
     }
 }
 
@@ -80,7 +80,7 @@ impl RfrChunkedLayer {
             // TODO(hds): signal writer thread to stop
             join_handle.join().unwrap();
 
-            self.writer_handle.writer.write();
+            self.writer_handle.writer.write_all_chunks();
         } else {
             // Otherwise some other thread has joined on the writer.
         }
@@ -120,7 +120,17 @@ impl RfrChunkedLayer {
 }
 
 fn run_writer_loop(writer: Arc<ChunkedWriter>) {
-    _ = writer;
+    loop {
+        if writer.is_closed() {
+            break;
+        }
+
+        let Ok(sleep_duration) = writer.write_completed_chunks() else {
+            // Error occurred, break.
+            break;
+        };
+        thread::sleep(sleep_duration);
+    }
 }
 
 impl<S> Layer<S> for RfrChunkedLayer

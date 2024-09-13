@@ -57,9 +57,14 @@ impl From<Duration> for AbsTimestamp {
 }
 
 impl AbsTimestamp {
-    /// Get an `AbsTimestamp` representing the current time.
+    /// Get an absolute timestamp representing the current time.
     pub fn now() -> Self {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
+    }
+
+    /// Return the [`Duration`] since the UNIX epoch represented by this absolute timestamp.
+    pub fn as_duration_since_epoch(&self) -> Duration {
+        Duration::new(self.secs, self.subsec_micros * 1_000)
     }
 }
 
