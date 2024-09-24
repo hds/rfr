@@ -4,12 +4,10 @@ The chunked format is designed to balance in-process resource consumption for mu
 applications with reduced storage requirements and the possibility of reading only small sections of
 the flight recording at a time without having to have previously consumed all prior sections.
 
-The chunked file format is not yet documented (or implemented).
-
 ## Format identifier
 
 The chunked file format has the variant identifier `rfr-c`. This chapter describes the format for
-version `rfr-s/0.0.2`.
+version `rfr-c/0.0.3`.
 
 For a description of the identifer encoding see the [Format identifier](format-identifier.md)
 chapter.
@@ -24,6 +22,7 @@ The layout of the separate files on disk is the following:
 
 - dir: `<recording-name>.rfr/`
   - file: `meta.rfr`
+  - file: `callsites.rfr`
   - dir: `<year>-<month>/<day>-<hour>/`
     - file: `chunk-<minute>-<second>.rfr`
 
@@ -31,9 +30,14 @@ The exact split of sub-directories is not overly important, it's there to help h
 flight recording structure and to avoid placing too many files in a single directory, which is
 something that some file systems have problems with.
 
-The key take away is that we have a reserved `meta.rfr` file for flight recording wide configuration
-declaration. Aside from that we have chunk files which are self contained recording files for a
-short time period, on the order of 1 second.
+The key take away is htat we have reserved top level files for flight recording wide information.
+
+- `meta.rfr` - recording configuration. See the [Meta](chunked_meta.md) chapter for details.
+- `callsites.rs` - append only list of callsites. See the [Callsites](chunked_callsites.md) chapter
+  for details.
+
+The remaining files are each self-contained recording files for a short time period, on the order of
+1 second.
 
 ## Chunk Structure
 
@@ -59,7 +63,7 @@ The chunk header contains metadata for the chunk.
 
 The earliest timestamp and latest timestamp are the minimum and the maximum of the same value in the
 [SeqChunkHeader] for all the sequence chunks that make up this chunk. As such, they are the minimum
-and maximum times of the recorded events in this chunk as a whole.
+and maximum times of the records in this chunk as a whole.
 
 These timestamps are relative to the base time in the interval.
 
@@ -83,8 +87,8 @@ base time has seconds precision, so all chunk timestamps will start on a second 
 The remaining times in the interval are chunk timestamps and so are relative to the base time.
 
 The start and end times represent the time period that a chunk covers within the recording. All
-events recorded that occur on or after the start time and strictly before the end time will be
-included in this chunk and not in any other chunk.
+records that occur on or after the start time and strictly before the end time will be included in
+this chunk and not in any other chunk.
 
 Note that while a chunk's base time is always measured in whole seconds, the chunk may have start
 and end times which aren't, for example if the chunk period is less than 1 second.
@@ -96,8 +100,8 @@ seconds resolution and is encoded as a [`varint(u64)`].
 
 ### ChunkTimestamp
 
-A chunk timestamp represents the time of an event with respect to the chunk's base time. It is
-stored as the number of microseconds since the base time. All events within a chunk must occur at
+A chunk timestamp represents the time of a record with respect to the chunk's base time. It is
+stored as the number of microseconds since the base time. All records within a chunk must occur at
 the base time or afterwards.
 
 Chunk timestamps are encoded as a [`newtype_struct`] of a [`varint(u64)`]. This gives it a range of
@@ -114,10 +118,10 @@ just the internal memory representation.
 
 ### SeqChunk
 
-Events in a single [Chunk] may not be globally ordered. However, all events recorded in a sequence
-chunk must be present in order. Generally this corresponds to recording the events thread-local.
-After a chunk's time period has finished, all the sequences are collected and written out. The
-sequence chunk would then contain the thread local recording.
+Records in a single [Chunk] may not be globally ordered. However, all records in a sequence chunk
+must be present in order. Generally this corresponds to records emitted from a single thread. After
+a chunk's time period has finished, all the sequences are collected and written out. The sequence
+chunk would then contain the thread local recording.
 
 Sequence chunks are not aggregated prior to being written out. As such, it is possible that the
 objects stored in one sequence chunk may be duplicated in other sequence chunks within the same
@@ -127,11 +131,11 @@ parent chunk.
 |-------------|-------------------|
 | header      | [SeqChunkHeader]  |
 | objects     | \[[Object]\]      |
-| events      | \[[EventRecord]\] |
+| records     | \[[Record]\]      |
 
-The objects array contains all objects referenced by events in this sequence chunk. The events
+The objects array contains all objects referenced by records in this sequence chunk. The records
 contain the occurences during the time period. This structure is different from the [streaming] file
-format where events and objects are mixed in a single stream of records.
+format where records and objects are mixed in a single stream.
 
 ### SeqChunkHeader
 
@@ -143,12 +147,12 @@ Header information for a sequence chunk.
 | earliest\_timestamp | [ChunkTimestamp]  |
 | latest\_timestamp   | [ChunkTimestamp]  |
 
-The earliest timestamp and latest timestamp are the minimum and maximum times of the recorded events
-in this sequence chunk respectively.
+The earliest timestamp and latest timestamp are the minimum and maximum times of the records in this
+sequence chunk respectively.
 
 ### SeqId
 
-The sequence identifier is an internal identifier for an in-order sequence of events created by
+The sequence identifier is an internal identifier for an in-order sequence of records created by
 instrumentation. Usually, a sequence identifier maps directly to a thread where instrumentation is
 collected. It is stored as a [`newtype_struct`] of a single [`varint(u64)`].
 
@@ -159,18 +163,19 @@ significanly during the course of an application execution.
 
 At this time, the only objects are tasks.
 
-| Variant | Discriminant | Data   |
-|---------|--------------|--------|
-| Task    | 0            | [Task] |
+| Variant | Discriminant | Data    |
+|---------|--------------|---------|
+| Span    | 0            | [Span]  |
+| Task    | 1            | [Task]  |
 
-### EventRecord
+### Record
 
-A record contains timing metadata and a single event.
+A record contains timing metadata and record data.
 
-| Element | Representation  |
-|---------|-----------------|
-| meta    | [Meta]          |
-| event   | [Event](#Event) |
+| Element | Representation |
+|---------|----------------|
+| meta    | [Meta]         |
+| data    | [RecordData]   |
 
 
 ### Meta
@@ -181,22 +186,28 @@ Metadata for a record.
 |-----------|------------------|
 | timestamp | [ChunkTimestamp] |
 
-### Event
+### RecordData
 
-Event is a [tagged union] that contains events concerning those objects.
+A record is a [tagged union] that contains information about an occurence in the instrumented
+application.
 
-| Variant        | Discriminant | Data             |
-|----------------|--------------|------------------|
-| NewTask        | 0            | `id`: [TaskId]   |
-| TaskPollStart  | 1            | `id`: [TaskId]   |
-| TaskPollEnd    | 2            | `id`: [TaskId]   |
-| TaskDrop       | 3            | `id`: [TaskId]   |
-| WakerWake      | 4            | `waker`: [Waker] |
-| WakerWakeByRef | 5            | `waker`: [Waker] |
-| WakerClone     | 6            | `waker`: [Waker] |
-| WakerDrop      | 7            | `waker`: [Waker] |
+| Variant        | Discriminant | Data                       |
+|----------------|--------------|----------------------------|
+| SpanNew        | 0            | `iid`: [InstrumentationId] |
+| SpanEnter      | 1            | `iid`: [InstrumentationId] |
+| SpanExit       | 2            | `iid`: [InstrumentationId] |
+| SpanClose      | 3            | `iid`: [InstrumentationId] |
+| Event          | 4            | `event`: [Event]           |
+| NewTask        | 5            | `iid`: [InstrumentationId] |
+| TaskPollStart  | 6            | `iid`: [InstrumentationId] |
+| TaskPollEnd    | 7            | `iid`: [InstrumentationId] |
+| TaskDrop       | 8            | `iid`: [InstrumentationId] |
+| WakerWake      | 9            | `waker`: [Waker]           |
+| WakerWakeByRef | 10           | `waker`: [Waker]           |
+| WakerClone     | 11           | `waker`: [Waker]           |
+| WakerDrop      | 12           | `waker`: [Waker]           |
 
-Events are encoded in a single large [tagged union] rather than hierachically as each level of a
+Records are encoded in a single large [tagged union] rather than hierachically as each level of a
 union hierarchy costs an extra byte (for unions with up to 127 variants).
 
 
@@ -206,13 +217,17 @@ union hierarchy costs an extra byte (for unions with up to 127 variants).
 [ChunkHeader]: #chunkheader
 [ChunkInterval]: #chunkinterval
 [ChunkTimestamp]: #chunktimestamp
-[EventRecord]: #eventrecord
+[Record]: #record
+[RecordData]: #recorddata
 [Meta]: #meta
 [Object]: #object
 [SeqChunk]: #seqchunk
 [SeqChunkHeader]: #seqchunkheader
 [SeqId]: #seqid
 
+[InstrumentationId]: common.md#instrumentationid
+[Span]: common.md#span
+[Event]: common.md#event
 [Task]: common.md#task
 [TaskId]: common.md#taskid
 [Waker]: common.md#waker
