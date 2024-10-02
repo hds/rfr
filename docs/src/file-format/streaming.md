@@ -13,7 +13,7 @@ stream can be performed during execution.
 ## Format identifier
 
 The streaming file format has the variant identifier `rfr-s`. This chapter describes the format for
-version `rfr-s/0.0.3`.
+version `rfr-s/0.0.4`.
 
 For a description of the identifer encoding see the [Format identifier](format-identifier.md)
 chapter.
@@ -34,16 +34,16 @@ When reading, care must be taken to respect the end of the file or stream that t
 is being read from.
 
 When the instrumented application terminates, a token record should indicate that no more records
-will be written. This uses the `End` variant of the [Event](#event) stored in the final record.
+will be written. This uses the `End` variant of the [RecordData](#recorddata) stored in the final record.
 
 ### Record
 
-A record contains timing metadata and a single event.
+A record contains timing metadata and record data.
 
-| Element | Representation  |
-|---------|-----------------|
-| meta    | [Meta](#meta)   |
-| event   | [Event](#Event) |
+| Element | Representation |
+|---------|----------------|
+| meta    | [Meta](#meta)  |
+| record  | [RecordData]   |
 
 
 ### Meta
@@ -52,37 +52,41 @@ A record contains timing metadata and a single event.
 |-----------|-----------------|
 | timestamp | [AbsTimestamp]  |
 
-### AbsTimestamp
 
-An absolute timestamp measured as time since the UNIX epoch (`1970-01-01T00:00Z`). The time is
-stored as seconds and sub-seconds as microsecond precision.
+### RecordData
 
-| Element        | Representation  |
-|----------------|-----------------|
-| secs           | [`varint(u64)`] |
-| subsec\_micros | [`varint(u32)`] |
-
-
-### Event
-
-Event is a [tagged union] that contains objects and events concerning those objects.
+Record data is a [tagged union] that contains objects and actions concerning those objects.
 
 | Variant        | Discriminant | Data                        |
 |----------------|--------------|-----------------------------|
-| Task           | 0            | [Task]                      |
-| NewTask        | 1            | `id`: [TaskId]              |
-| TaskPollStart  | 2            | `id`: [TaskId]              |
-| TaskPollEnd    | 3            | `id`: [TaskId]              |
-| TaskDrop       | 4            | `id`: [TaskId]              |
-| WakerWake      | 5            | `waker`: [Waker]            |
-| WakerWakeByRef | 6            | `waker`: [Waker]            |
-| WakerClone     | 7            | `waker`: [Waker]            |
-| WakerDrop      | 8            | `waker`: [Waker]            |
-| End            | 9            |                             |
+| End            | 0            |                             |
+| Callsite       | 1            | [Callsite]                  |
+| Span           | 2            | [Span]                      |
+| Event          | 3            | [Event]                     |
+| Task           | 4            | [Task]                      |
+| SpanNew        | 5            | `iid`: [InstrumentationId]  |
+| SpanEnter      | 6            | `iid`: [InstrumentationId]  |
+| SpanExit       | 7            | `iid`: [InstrumentationId]  |
+| SpanClose      | 8            | `iid`: [InstrumentationId]  |
+| TaskNew        | 9            | `iid`: [InstrumentationId]  |
+| TaskPollStart  | 10           | `iid`: [InstrumentationId]  |
+| TaskPollEnd    | 11           | `iid`: [InstrumentationId]  |
+| TaskDrop       | 12           | `iid`: [InstrumentationId]  |
+| WakerWake      | 13           | `waker`: [Waker]            |
+| WakerWakeByRef | 14           | `waker`: [Waker]            |
+| WakerClone     | 15           | `waker`: [Waker]            |
+| WakerDrop      | 16           | `waker`: [Waker]            |
 
 
-[AbsTimestamp]: #abstimestamp
+[Record]: #record
+[RecordData]: #recorddata
 
+[AbsTimestamp]: common.md#abstimestamp
+
+[Callsite]: common.md#callsite
+[Span]: common.md#span
+[InstrumentationId]: common.md#instrumentationid
+[Event]: common.md#event
 [Task]: common.md#task
 [TaskId]: common.md#taskid
 [Waker]: common.md#waker

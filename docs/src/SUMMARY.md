@@ -8,5 +8,7 @@
   - [Common](file-format/common.md)
   - [Streaming](file-format/streaming.md)
   - [Chunked](file-format/chunked.md)
+    - [Meta](file-format/chunked_meta.md)
+    - [Callsites](file-format/chunked_callsites.md)
 
 [Glossary](glossary.md)
