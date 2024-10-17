@@ -16,7 +16,6 @@ use walkdir::WalkDir;
 
 use crate::{
     common::{Event, Task},
-    identifier::ReadFormatIdentifierError,
     rec::{self, AbsTimestamp},
     FormatIdentifier, FormatVariant,
 };
@@ -91,9 +90,7 @@ impl ChunkedWriter {
         {
             let mut file = fs::File::create(path).unwrap();
 
-            let version = format!("{}", current_software_version());
-            postcard::to_io(&version, &mut file).unwrap();
-
+            postcard::to_io(&current_software_version(), &mut file).unwrap();
             postcard::to_io(header, &mut file).unwrap();
         }
 
@@ -270,8 +267,7 @@ impl ChunkBuffer {
     fn write(&self, writer: impl io::Write) {
         let mut writer = writer;
 
-        let version = format!("{}", current_software_version());
-        postcard::to_io(&version, &mut writer).unwrap();
+        postcard::to_io(&current_software_version(), &mut writer).unwrap();
 
         let (earliest_timestamp, latest_timestamp) = self
             .seq_chunks
@@ -479,8 +475,11 @@ impl Chunk {
             .seek(SeekFrom::Start(0))
             .map_err(|_| ChunkReadError::ReadError)?;
 
+        let mut buffer = vec![0_u8; 1024];
+        let mut file_buffer = (&mut reader, buffer.as_mut_slice());
+
         // TODO(hds): Should we validate the identifier?
-        let _identifier = FormatIdentifier::try_from_io(&mut reader).unwrap();
+        let (_identifier, _): (FormatIdentifier, _) = postcard::from_io(file_buffer).unwrap();
 
         let (header, _): (ChunkHeader, _) =
             postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
@@ -489,8 +488,7 @@ impl Chunk {
             postcard::from_io((&mut reader, Vec::new().as_mut_slice())).unwrap();
         let mut seq_chunks: Vec<SeqChunk> = Vec::with_capacity(seq_chunk_len);
 
-        let mut buffer = vec![0_u8; 1024];
-        let mut file_buffer = (&mut reader, buffer.as_mut_slice());
+        file_buffer = (&mut reader, buffer.as_mut_slice());
 
         'seq_chunk: for idx in 0..seq_chunk_len {
             let seq_chunk_result = loop {
@@ -716,7 +714,9 @@ impl ChunkLoader {
     fn ensure_header(&mut self) {
         if let ChunkLoaderState::Unloaded = self.state {
             let mut file = fs::File::open(&self.path.path).unwrap();
-            let _identifier = FormatIdentifier::try_from_io(&mut file).unwrap();
+            let mut buffer = vec![0_u8; 24];
+            let (_identifier, _): (FormatIdentifier, _) =
+                postcard::from_io((&mut file, buffer.as_mut_slice())).unwrap();
 
             let (header, _) = postcard::from_io((&mut file, Vec::new().as_mut_slice())).unwrap();
 
@@ -740,8 +740,10 @@ impl ChunkLoader {
 
 fn read_meta(path: &PathBuf) -> Result<(FormatIdentifier, MetaHeader), MetaReadError> {
     let mut meta_file = fs::File::open(path).map_err(MetaReadError::OpenFileFailed)?;
-    let format_identifier = FormatIdentifier::try_from_io(&mut meta_file)
-        .map_err(MetaReadError::FormatIdenifierInvalid)?;
+    let mut buffer = vec![0_u8; 24];
+    let (format_identifier, _): (FormatIdentifier, _) =
+        postcard::from_io((&mut meta_file, buffer.as_mut_slice()))
+            .map_err(MetaReadError::FormatIdenifierInvalid)?;
 
     let (header, _) = postcard::from_io((&mut meta_file, Vec::new().as_mut_slice()))
         .map_err(MetaReadError::HeaderInvalid)?;
@@ -753,7 +755,7 @@ fn read_meta(path: &PathBuf) -> Result<(FormatIdentifier, MetaHeader), MetaReadE
 #[non_exhaustive]
 pub enum MetaReadError {
     OpenFileFailed(io::Error),
-    FormatIdenifierInvalid(ReadFormatIdentifierError),
+    FormatIdenifierInvalid(postcard::Error),
     HeaderInvalid(postcard::Error),
 }
 
