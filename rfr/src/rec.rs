@@ -194,7 +194,7 @@ pub fn from_file(filename: String) -> Vec<Record> {
         return Vec::new();
     };
 
-    let version = FormatIdentifier::try_from_io(file_buffer.0).unwrap();
+    let (version, _): (FormatIdentifier, _) = postcard::from_io(file_buffer).unwrap();
     let current = current_software_version();
     if !current.can_read_version(&version) {
         panic!("Software version {current} cannot read file format version {version}",);

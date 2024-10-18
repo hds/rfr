@@ -1,5 +1,7 @@
 use std::{fmt, io, str::FromStr};
 
+use serde::{de::Visitor, Deserialize, Serialize};
+
 /// Represents the RFR format variant used to encode a file.
 ///
 /// A format variant distinguishes different RFR file formats, either streaming or chunked.
@@ -14,14 +16,7 @@ pub enum FormatVariant {
 
 impl fmt::Display for FormatVariant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::RfrStreaming => "rfr-s",
-                Self::RfrChunked => "rfr-c",
-            }
-        )
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -31,6 +26,13 @@ impl FormatVariant {
             "rfr-s" => Some(Self::RfrStreaming),
             "rfr-c" => Some(Self::RfrChunked),
             _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::RfrStreaming => "rfr-s",
+            Self::RfrChunked => "rfr-c",
         }
     }
 }
@@ -258,5 +260,41 @@ impl FormatIdentifier {
         }
 
         false
+    }
+}
+
+impl Serialize for FormatIdentifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let stringly = format!("{self}");
+        serializer.serialize_str(&stringly)
+    }
+}
+
+struct FormatIdentifierVisitor {}
+
+impl<'de> Visitor<'de> for FormatIdentifierVisitor {
+    type Value = FormatIdentifier;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string representation of a format identifier, e.g. 'rfr-c/0.1.2'")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        FormatIdentifier::from_str(v).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for FormatIdentifier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(FormatIdentifierVisitor {})
     }
 }
