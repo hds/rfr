@@ -158,11 +158,7 @@ pub(crate) fn streaming_recording_info(path: String) -> Option<RecordingInfo> {
 pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
     let mut recording = chunked::from_path(path).unwrap();
     recording.load_all_chunks();
-    println!(
-        "Recording: {} {:?}",
-        recording.identifier(),
-        recording.meta()
-    );
+    println!("Recording: {:?}", recording.meta());
     for chunk in recording.chunks_lossy() {
         let Some(chunk) = chunk else { continue };
         println!("\n--------------------------------");

@@ -20,7 +20,10 @@ use crate::{
     FormatIdentifier, FormatVariant,
 };
 
+mod meta;
 mod sequence;
+
+pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use sequence::{SeqChunk, SeqChunkBuffer};
 
 fn current_software_version() -> FormatIdentifier {
@@ -50,12 +53,9 @@ impl ChunkedWriter {
     pub fn new(root_dir: String) -> Self {
         let timestamp = rec::AbsTimestamp::now();
         let base_time = AbsTimestampSecs::from(timestamp.clone());
-        let header = MetaHeader {
-            created_time: timestamp,
-            base_time,
-        };
+        let meta = ChunkedMeta::new(vec![current_software_version()]);
         fs::create_dir_all(&root_dir).unwrap();
-        Self::write_meta(&root_dir, &header);
+        Self::write_meta(&root_dir, &meta);
 
         // By default, chunks contain 1 second of execution time.
         let chunk_period_micros = 1_000_000;
@@ -85,13 +85,12 @@ impl ChunkedWriter {
         self.closed.load(atomic::Ordering::SeqCst)
     }
 
-    fn write_meta(base_dir: &String, header: &MetaHeader) -> bool {
+    fn write_meta(base_dir: &String, meta: &ChunkedMeta) -> bool {
         let path = Path::new(base_dir).join("meta.rfr");
         {
             let mut file = fs::File::create(path).unwrap();
 
-            postcard::to_io(&current_software_version(), &mut file).unwrap();
-            postcard::to_io(header, &mut file).unwrap();
+            postcard::to_io(meta, &mut file).unwrap();
         }
 
         true
@@ -293,13 +292,6 @@ impl ChunkBuffer {
     }
 }
 
-/// Header for the metadata file which is stored at `<chunked-recording.rfr>/meta.rfr`
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MetaHeader {
-    pub created_time: rec::AbsTimestamp,
-    pub base_time: AbsTimestampSecs,
-}
-
 /// A timestamp measured from the [`UNIX_EPOCH`].
 ///
 /// This timestamp is absoluteand only contains the whole seconds. No sub-second component is
@@ -402,8 +394,7 @@ pub enum Object {
 
 #[derive(Debug)]
 pub struct Recording {
-    identifier: FormatIdentifier,
-    meta: MetaHeader,
+    meta: ChunkedMeta,
     chunks: Vec<ChunkLoader>,
 }
 
@@ -414,11 +405,7 @@ impl Recording {
         }
     }
 
-    pub fn identifier(&self) -> &FormatIdentifier {
-        &self.identifier
-    }
-
-    pub fn meta(&self) -> &MetaHeader {
+    pub fn meta(&self) -> &ChunkedMeta {
         &self.meta
     }
 
@@ -738,35 +725,19 @@ impl ChunkLoader {
     }
 }
 
-fn read_meta(path: &PathBuf) -> Result<(FormatIdentifier, MetaHeader), MetaReadError> {
-    let mut meta_file = fs::File::open(path).map_err(MetaReadError::OpenFileFailed)?;
-    let mut buffer = vec![0_u8; 24];
-    let (format_identifier, _): (FormatIdentifier, _) =
-        postcard::from_io((&mut meta_file, buffer.as_mut_slice()))
-            .map_err(MetaReadError::FormatIdenifierInvalid)?;
-
-    let (header, _) = postcard::from_io((&mut meta_file, Vec::new().as_mut_slice()))
-        .map_err(MetaReadError::HeaderInvalid)?;
-
-    Ok((format_identifier, header))
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum MetaReadError {
-    OpenFileFailed(io::Error),
-    FormatIdenifierInvalid(postcard::Error),
-    HeaderInvalid(postcard::Error),
-}
-
 pub fn from_path(recording_path: String) -> Result<Recording, RecordingReadError> {
     let recording_path = Path::new(&recording_path);
     let path = recording_path.join("meta.rfr");
-    let (identifier, meta) = read_meta(&path).map_err(RecordingReadError::ReadingMetaFailed)?;
+    let meta_file = fs::File::open(&path).map_err(RecordingReadError::MetaFileNotReadable)?;
+    let meta =
+        ChunkedMeta::try_from_io(meta_file).map_err(RecordingReadError::ReadingMetaFailed)?;
 
     let current = current_software_version();
-    if !current.can_read_version(&identifier) {
-        return Err(RecordingReadError::IncompatibleVersion(identifier));
+
+    if !current.can_read_version(&meta.header.format_identifiers[0]) {
+        return Err(RecordingReadError::IncompatibleVersion(
+            meta.header.format_identifiers[0].clone(),
+        ));
     }
 
     let mut chunks = Vec::new();
@@ -792,18 +763,15 @@ pub fn from_path(recording_path: String) -> Result<Recording, RecordingReadError
         println!("dir entry: {:?}", entry.file_name());
     }
 
-    Ok(Recording {
-        identifier,
-        meta,
-        chunks,
-    })
+    Ok(Recording { meta, chunks })
 }
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RecordingReadError {
     Unimplemented,
-    ReadingMetaFailed(MetaReadError),
+    MetaFileNotReadable(io::Error),
+    ReadingMetaFailed(MetaTryFromIoError),
     IncompatibleVersion(FormatIdentifier),
     FilesystemError(walkdir::Error),
 }
