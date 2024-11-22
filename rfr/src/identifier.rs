@@ -12,6 +12,8 @@ pub enum FormatVariant {
     RfrStreaming,
     /// The chunked RFR variant. The string representation is `rfr-c`.
     RfrChunked,
+    /// The chunked RFR meta file. The string representation is `rfr-cm`.
+    RfrChunkedMeta,
 }
 
 impl fmt::Display for FormatVariant {
@@ -25,6 +27,7 @@ impl FormatVariant {
         match s {
             "rfr-s" => Some(Self::RfrStreaming),
             "rfr-c" => Some(Self::RfrChunked),
+            "rfr-cm" => Some(Self::RfrChunkedMeta),
             _ => None,
         }
     }
@@ -33,6 +36,7 @@ impl FormatVariant {
         match self {
             Self::RfrStreaming => "rfr-s",
             Self::RfrChunked => "rfr-c",
+            Self::RfrChunkedMeta => "rfr-cm",
         }
     }
 }
