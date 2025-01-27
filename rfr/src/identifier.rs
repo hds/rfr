@@ -279,7 +279,7 @@ impl Serialize for FormatIdentifier {
 
 struct FormatIdentifierVisitor {}
 
-impl<'de> Visitor<'de> for FormatIdentifierVisitor {
+impl Visitor<'_> for FormatIdentifierVisitor {
     type Value = FormatIdentifier;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
