@@ -51,7 +51,7 @@ impl RfrChunkedLayer {
     }
 
     fn spawn_writer(base_dir: String) -> WriterHandle {
-        let writer = Arc::new(ChunkedWriter::new(base_dir.to_owned()));
+        let writer = Arc::new(ChunkedWriter::try_new(base_dir.to_owned()).unwrap());
 
         let thread_writer = Arc::clone(&writer);
         let join_handle = thread::Builder::new()
