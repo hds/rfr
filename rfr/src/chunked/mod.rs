@@ -20,9 +20,14 @@ use crate::{
     FormatIdentifier, FormatVariant,
 };
 
+mod callsite;
 mod meta;
 mod sequence;
 
+pub use callsite::{
+    Callsite, CallsiteId, ChunkedCallsites, ChunkedCallsitesWriter, FlushCallsitesError,
+    NewChunkedCallsitesWriterError,
+};
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use sequence::{SeqChunk, SeqChunkBuffer};
 
@@ -46,16 +51,25 @@ pub struct ChunkedWriter {
 
     closed: AtomicBool,
 
+    callsites_writer: Mutex<ChunkedCallsitesWriter<fs::File>>,
     chunk_buffers: Mutex<Vec<ChunkBuffer>>,
 }
 
 impl ChunkedWriter {
-    pub fn new(root_dir: String) -> Self {
+    pub fn try_new(root_dir: String) -> Result<Self, NewChunkedWriterError> {
         let timestamp = rec::AbsTimestamp::now();
         let base_time = AbsTimestampSecs::from(timestamp.clone());
         let meta = ChunkedMeta::new(vec![current_software_version()]);
         fs::create_dir_all(&root_dir).unwrap();
-        Self::write_meta(&root_dir, &meta);
+        if !Self::write_meta(&root_dir, &meta) {
+            return Err(NewChunkedWriterError::WriteMetaFailed);
+        }
+
+        let callsites_path = Path::new(&root_dir).join("callsites.rfr");
+        let callsites_file = fs::File::create(callsites_path)
+            .map_err(NewChunkedWriterError::CreateCallsitesFailed)?;
+        let callsites_writer = ChunkedCallsitesWriter::try_new(callsites_file)
+            .map_err(NewChunkedWriterError::WriteCallsitesFailed)?;
 
         // By default, chunks contain 1 second of execution time.
         let chunk_period_micros = 1_000_000;
@@ -64,13 +78,14 @@ impl ChunkedWriter {
             base_time,
             chunk_period_micros,
             closed: false.into(),
+            callsites_writer: Mutex::new(callsites_writer),
             chunk_buffers: Mutex::new(Vec::new()),
         };
 
         let base_time = writer.base_time;
         writer.ensure_dir(&base_time);
 
-        writer
+        Ok(writer)
     }
 
     pub fn chunk_period_micros(&self) -> u32 {
@@ -192,6 +207,8 @@ impl ChunkedWriter {
         // the next interval.
         let next_write_buffer = write_time_buffer + Duration::from_millis(50);
 
+        self.flush_callsites();
+
         chunk_buffers.retain(|chunk_buffer| {
             let end_time = chunk_buffer.header.interval.abs_end_time();
             let since_completion = AbsTimestamp::now()
@@ -208,6 +225,8 @@ impl ChunkedWriter {
             }
         });
 
+        // TODO(hds): Flush the callsites again afterwards to ensure consistency?
+
         let now = AbsTimestamp::now();
         let interval =
             ChunkInterval::from_timestamp_and_period(now.clone(), self.chunk_period_micros as u64);
@@ -223,18 +242,56 @@ impl ChunkedWriter {
     /// contained sequence chunks, then they can be written to disk at a later time with subsequent
     /// calls to [`write_completed_chunks`] or [`write_all_chunks`].
     pub fn write_all_chunks(&self) {
+        // Flush the callsites first
+        self.flush_callsites();
+
         let chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
 
         chunk_buffers.iter().for_each(|chunk_buffer| {
             let writer = self.writer_for_chunk(chunk_buffer);
             chunk_buffer.write(writer);
         });
+
+        // TODO(hds): Flush the callsites again afterwards to ensure consistency?
     }
 
     fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
         fs::File::create(self.chunk_path(&chunk.header.interval.base_time)).unwrap()
     }
+
+    fn flush_callsites(&self) {
+        let mut callsites_writer = self
+            .callsites_writer
+            .lock()
+            .expect("callsites writer mutex poisoned");
+
+        if let Err(flush_error) = callsites_writer.flush() {
+            eprintln!("Failed to flush callsites. Recording may be inconsistent: {flush_error}");
+        }
+    }
 }
+
+#[derive(Debug)]
+pub enum NewChunkedWriterError {
+    WriteMetaFailed,
+    CreateCallsitesFailed(io::Error),
+    WriteCallsitesFailed(NewChunkedCallsitesWriterError),
+}
+
+impl fmt::Display for NewChunkedWriterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WriteMetaFailed => write!(f, "failed to write `meta.rfr` file"),
+            Self::CreateCallsitesFailed(inner) => {
+                write!(f, "failed to create `callsites.rfr` file: {inner}")
+            }
+            Self::WriteCallsitesFailed(inner) => {
+                write!(f, "failed to write `callsites.rfr` file: {inner}")
+            }
+        }
+    }
+}
+impl error::Error for NewChunkedWriterError {}
 
 #[non_exhaustive]
 #[derive(Debug)]

@@ -14,6 +14,8 @@ pub enum FormatVariant {
     RfrChunked,
     /// The chunked RFR meta file. The string representation is `rfr-cm`.
     RfrChunkedMeta,
+    /// The chunked RFR callsites file. The string representation is `rfr-cc`.
+    RfrChunkedCallsites,
 }
 
 impl fmt::Display for FormatVariant {
@@ -28,6 +30,7 @@ impl FormatVariant {
             "rfr-s" => Some(Self::RfrStreaming),
             "rfr-c" => Some(Self::RfrChunked),
             "rfr-cm" => Some(Self::RfrChunkedMeta),
+            "rfr-cc" => Some(Self::RfrChunkedCallsites),
             _ => None,
         }
     }
@@ -37,6 +40,7 @@ impl FormatVariant {
             Self::RfrStreaming => "rfr-s",
             Self::RfrChunked => "rfr-c",
             Self::RfrChunkedMeta => "rfr-cm",
+            Self::RfrChunkedCallsites => "rfr-cc",
         }
     }
 }
