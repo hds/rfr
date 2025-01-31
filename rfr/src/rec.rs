@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{Task, TaskId},
+    common::{Task, InstrumentationId},
     FormatIdentifier, FormatVariant,
 };
 
@@ -115,10 +115,10 @@ impl Record {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Event {
     Task(Task),
-    NewTask { id: TaskId },
-    TaskPollStart { id: TaskId },
-    TaskPollEnd { id: TaskId },
-    TaskDrop { id: TaskId },
+    NewTask { id: InstrumentationId },
+    TaskPollStart { id: InstrumentationId },
+    TaskPollEnd { id: InstrumentationId },
+    TaskDrop { id: InstrumentationId },
     WakerOp(WakerAction),
 }
 
@@ -133,9 +133,9 @@ pub enum WakerOp {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WakerAction {
     pub op: WakerOp,
-    pub task_id: TaskId,
+    pub task_id: InstrumentationId,
 
-    pub context: Option<TaskId>,
+    pub context: Option<InstrumentationId>,
 }
 
 #[derive(Debug)]

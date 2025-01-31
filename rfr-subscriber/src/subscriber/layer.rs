@@ -111,9 +111,9 @@ where
                 }
                 {
                     let mut guard = self.writer.lock().unwrap();
-                    let task_id = common::TaskId::from(spawn.task_id.0);
+                    let task_id = common::InstrumentationId::from(spawn.task_id.0);
                     let task_event = rec::Event::Task(common::Task {
-                        task_id,
+                        iid: task_id,
                         task_name: spawn.task_name,
                         task_kind: match spawn.task_kind {
                             TaskKind::Task => common::TaskKind::Task,
@@ -123,7 +123,7 @@ where
                             TaskKind::Other(val) => common::TaskKind::Other(val),
                         },
 
-                        context: spawn.context.map(|task_id| common::TaskId::from(task_id.0)),
+                        context: spawn.context.map(|task_id| common::InstrumentationId::from(task_id.0)),
                     });
                     let new_event = rec::Event::NewTask { id: task_id };
 
@@ -175,8 +175,8 @@ where
                             WakerOp::Clone => rec::WakerOp::Clone,
                             WakerOp::Drop => rec::WakerOp::Drop,
                         },
-                        task_id: common::TaskId::from(waker.task_id.0),
-                        context: waker.context.map(|task_id| common::TaskId::from(task_id.0)),
+                        task_id: common::InstrumentationId::from(waker.task_id.0),
+                        context: waker.context.map(|task_id| common::InstrumentationId::from(task_id.0)),
                     });
 
                     (*guard).write_record(rec::Record::new(rec_meta, waker_action));
@@ -196,7 +196,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
+                let task_id = common::InstrumentationId::from(task_id.0);
                 let poll_start = rec::Event::TaskPollStart { id: task_id };
 
                 guard.write_record(rec::Record::new(rec_meta, poll_start));
@@ -212,7 +212,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
+                let task_id = common::InstrumentationId::from(task_id.0);
                 let poll_end = rec::Event::TaskPollEnd { id: task_id };
 
                 (*guard).write_record(rec::Record::new(rec_meta, poll_end));
@@ -230,7 +230,7 @@ where
             // This is a runtime.spawn span
             {
                 let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
+                let task_id = common::InstrumentationId::from(task_id.0);
                 let task_drop = rec::Event::TaskDrop { id: task_id };
 
                 (*guard).write_record(rec::Record::new(rec_meta, task_drop));

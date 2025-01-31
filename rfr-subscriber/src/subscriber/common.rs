@@ -1,8 +1,8 @@
-use std::{error, fmt, ptr};
+use std::{error, fmt, fs::write, ptr};
 
+use rfr::{chunked::{Callsite, CallsiteId}, common::{Field, FieldName, FieldValue, InstrumentationId}};
 use tracing::{
-    field::{Field, Visit},
-    span, Metadata, Subscriber,
+    field::{Field, Visit}, span, Level, Metadata, Subscriber
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
@@ -89,13 +89,47 @@ impl fmt::Display for TryFromMetadataError {
 }
 impl error::Error for TryFromMetadataError {}
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(super) struct CallsiteId(u64);
+pub(super) fn callsite(metadata: &Metadata<'_>) -> Callsite {
 
-impl From<&Metadata<'_>> for CallsiteId {
-    fn from(metadata: &Metadata<'_>) -> Self {
-        Self(ptr::from_ref(metadata) as u64)
+    let mut const_fields = vec![
+        Field { name: FieldName("name".into()), value: FieldValue::Str(metadata.name().to_string()) },
+        Field { name: FieldName("target".into()), value: FieldValue::Str(metadata.name().to_string()) },
+    ];
+    if let Some(module_path) = metadata.module_path() {
+        const_fields.push(Field { name: FieldName("module_path".into()), value: FieldValue::Str(module_path.to_string()) });
     }
+    if let Some(module_pathfile) = metadata.file() {
+        const_fields.push(Field { name: FieldName("file".into()), value: FieldValue::Str(module_pathfile.to_string()) });
+    }
+    if let Some(line) = metadata.line() {
+        const_fields.push(Field { name: FieldName("line".into()), value: FieldValue::U64(line as u64) });
+    }
+
+    let mut split_field_names = Vec::new();
+    for field in metadata.fields() {
+        split_field_names.push(FieldName(field.name().into()));
+    }
+    Callsite {
+        callsite_id: callsite_id(metadata),
+        level: rfr::common::Level(match metadata.level() {
+            &Level::ERROR => 50,
+            &Level::WARN => 40,
+            &Level::INFO => 30,
+            &Level::DEBUG => 20,
+            &Level::TRACE => 10,
+        }),
+        kind: if metadata.is_span() { rfr::common::Kind::Span } else { rfr::common::Kind::Event },
+        const_fields,
+        split_field_names,
+    }
+}
+
+pub(super) fn callsite_id(metadata: &Metadata<'_>) -> CallsiteId {
+    CallsiteId::from(ptr::from_ref(metadata) as u64)
+}
+
+pub(super) fn iid(span_id: &span::Id) -> InstrumentationId {
+    InstrumentationId::from(span_id.as_u64())
 }
 
 pub(crate) fn get_context_task_id<S>(ctx: &Context<'_, S>) -> Option<TaskId>
@@ -118,10 +152,8 @@ pub(crate) struct SpawnSpan {
 
     pub(crate) context: Option<TaskId>,
 
-    #[allow(unused)]
-    callsite: CallsiteId,
-    #[allow(unused)]
-    span: span::Id,
+    pub(crate) callsite: CallsiteId,
+    pub(crate) span: span::Id,
 }
 
 impl SpawnSpan {

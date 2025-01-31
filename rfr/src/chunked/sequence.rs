@@ -20,8 +20,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    chunked::{AbsTimestampSecs, ChunkInterval, ChunkTimestamp, EventRecord, Object},
-    common::{Event, TaskId},
+    chunked::{AbsTimestampSecs, ChunkInterval, ChunkTimestamp, Record, RecordData, Object},
+    common::InstrumentationId,
     rec::AbsTimestamp,
 };
 
@@ -39,7 +39,7 @@ use crate::{
 pub struct SeqChunk {
     pub header: SeqChunkHeader,
     pub objects: Vec<Object>,
-    pub events: Vec<EventRecord>,
+    pub records: Vec<Record>,
 }
 
 /// Sequence chunk header
@@ -97,8 +97,8 @@ pub struct SeqChunkBuffer {
 #[derive(Debug)]
 struct Buffer {
     header: SeqChunkHeader,
-    objects: HashMap<TaskId, Vec<u8>>,
-    missing_objects: HashSet<TaskId>,
+    objects: HashMap<InstrumentationId, Vec<u8>>,
+    missing_objects: HashSet<InstrumentationId>,
     event_count: usize,
     events: Vec<u8>,
 }
@@ -156,25 +156,25 @@ impl SeqChunkBuffer {
     // FIXME(hds): modify to take an absolute timestamp and an event instead of an EventRecord.
     // Then this function will convert the timestamp to a chunked timestamp and validate it at the
     // same time. If it is invalid, an error will be returned.
-    pub fn append_record<F>(&self, record: EventRecord, get_objects: F)
+    pub fn append_record<FnGetObjects>(&self, record: Record, get_objects: FnGetObjects)
     where
-        F: FnOnce(&[TaskId]) -> Vec<Option<Object>>,
+        FnGetObjects: FnOnce(&[InstrumentationId]) -> Vec<Option<Object>>,
     {
         let mut buffer = self.buffer.lock().expect("poisoned");
         let mut missing_task_ids = Vec::new();
-        match &record.event {
-            Event::NewTask { id }
-            | Event::TaskPollStart { id }
-            | Event::TaskPollEnd { id }
-            | Event::TaskDrop { id } => {
-                if !buffer.objects.contains_key(id) {
-                    missing_task_ids.push(*id);
+        match &record.data {
+            RecordData::TaskNew { iid }
+            | RecordData::TaskPollStart { iid }
+            | RecordData::TaskPollEnd { iid }
+            | RecordData::TaskDrop { iid } => {
+                if !buffer.objects.contains_key(iid) {
+                    missing_task_ids.push(*iid);
                 }
             }
-            Event::WakerWake { waker }
-            | Event::WakerWakeByRef { waker }
-            | Event::WakerClone { waker }
-            | Event::WakerDrop { waker } => {
+            RecordData::WakerWake { waker }
+            | RecordData::WakerWakeByRef { waker }
+            | RecordData::WakerClone { waker }
+            | RecordData::WakerDrop { waker } => {
                 if !buffer.objects.contains_key(&waker.task_id) {
                     missing_task_ids.push(waker.task_id);
                 }
@@ -185,6 +185,14 @@ impl SeqChunkBuffer {
                         missing_task_ids.push(*context_task_id);
                     }
                 }
+            }
+            RecordData::SpanNew { iid } | RecordData::SpanEnter { iid } | RecordData::SpanExit { iid } | RecordData::SpanClose { iid } => {
+                // TODO(hds): Do something with spans
+                _ = iid;
+            }
+            RecordData::Event { event } => {
+                // TODO(hds): Do something with events
+                _ = event;
             }
         }
 

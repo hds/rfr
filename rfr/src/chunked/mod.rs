@@ -15,12 +15,13 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
-    common::{Event, Task},
+    common::{Span, Task},
     rec::{self, AbsTimestamp},
     FormatIdentifier, FormatVariant,
 };
 
 mod callsite;
+mod record;
 mod meta;
 mod sequence;
 
@@ -28,6 +29,7 @@ pub use callsite::{
     Callsite, CallsiteId, ChunkedCallsites, ChunkedCallsitesWriter, FlushCallsitesError,
     NewChunkedCallsitesWriterError,
 };
+pub use record::{Record, Meta, RecordData};
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use sequence::{SeqChunk, SeqChunkBuffer};
 
@@ -133,6 +135,12 @@ impl ChunkedWriter {
 
         self.dir_path_from_utc(&ts_utc)
             .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S")))
+    }
+
+    pub fn register_callsite(&self, callsite: Callsite) {
+        let mut callsites_writer = self.callsites_writer.lock().expect("callsite writer lock poisoned");
+        // TODO(hds): Should we try to avoid building a `Callsite` if it's going to be a duplicate?
+        callsites_writer.push_callsite(callsite);
     }
 
     pub fn with_seq_chunk_buffer<F>(&self, timestamp: AbsTimestamp, f: F)
@@ -430,22 +438,10 @@ impl ChunkTimestamp {
     }
 }
 
-/// Metadata for an [`EventRecord`].
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Meta {
-    /// The timestamp that the event occurs at.
-    pub timestamp: ChunkTimestamp,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct EventRecord {
-    pub meta: Meta,
-    pub event: Event,
-}
-
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Object {
+    Span(Span),
     Task(Task),
 }
 

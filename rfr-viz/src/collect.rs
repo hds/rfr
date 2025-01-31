@@ -2,7 +2,7 @@ use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration
 
 use rfr::{
     chunked,
-    common::{Event, Task, TaskId, Waker},
+    common::{Event, Task, InstrumentationId, Waker},
     rec::{self, from_file, AbsTimestamp, WinTimestamp},
 };
 
@@ -175,7 +175,7 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
                 println!("    - {object:?}");
             }
             println!("  - Events:");
-            for events in &seq_chunk.events {
+            for events in &seq_chunk.records {
                 println!("    - {events:?}");
             }
         }
@@ -226,7 +226,7 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
                 }
             }
 
-            for record in &seq_chunk.events {
+            for record in &seq_chunk.records {
                 let task_id = match &record.event {
                     Event::NewTask { id }
                     | Event::TaskPollStart { id }
@@ -445,7 +445,7 @@ pub(crate) fn collect_into_rows(
         .iter()
         .map(|(idx, task_events)| (task_events.task.task_id, *idx))
         .collect();
-    let get_index = |task_id: Option<TaskId>| task_id.and_then(|id| task_indices.get(&id).copied());
+    let get_index = |task_id: Option<InstrumentationId>| task_id.and_then(|id| task_indices.get(&id).copied());
 
     let mut task_rows = Vec::new();
     for (index, TaskEvents { task, events }) in tasks_with_indicies {
