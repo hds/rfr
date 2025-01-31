@@ -8,7 +8,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::{Task, TaskId},
+    chunked::Callsite,
+    common::{Event, InstrumentationId, Span, Task, Waker},
     FormatIdentifier, FormatVariant,
 };
 
@@ -103,39 +104,34 @@ impl Meta {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Record {
     pub meta: Meta,
-    pub event: Event,
+    pub data: RecordData,
 }
 
 impl Record {
-    pub fn new(meta: Meta, event: Event) -> Self {
-        Self { meta, event }
+    pub fn new(meta: Meta, data: RecordData) -> Self {
+        Self { meta, data }
     }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub enum Event {
-    Task(Task),
-    NewTask { id: TaskId },
-    TaskPollStart { id: TaskId },
-    TaskPollEnd { id: TaskId },
-    TaskDrop { id: TaskId },
-    WakerOp(WakerAction),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub enum WakerOp {
-    Wake,
-    WakeByRef,
-    Clone,
-    Drop,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WakerAction {
-    pub op: WakerOp,
-    pub task_id: TaskId,
-
-    pub context: Option<TaskId>,
+pub enum RecordData {
+    End,
+    Callsite { callsite: Callsite },
+    Span { span: Span },
+    Event { event: Event },
+    Task { task: Task },
+    SpanNew { iid: InstrumentationId },
+    SpanEnter { iid: InstrumentationId },
+    SpanExit { iid: InstrumentationId },
+    SpanClose { iid: InstrumentationId },
+    TaskNew { iid: InstrumentationId },
+    TaskPollStart { iid: InstrumentationId },
+    TaskPollEnd { iid: InstrumentationId },
+    TaskDrop { iid: InstrumentationId },
+    WakerWake { waker: Waker },
+    WakerWakeByRef { waker: Waker },
+    WakerClone { waker: Waker },
+    WakerDrop { waker: Waker },
 }
 
 #[derive(Debug)]
@@ -144,7 +140,7 @@ where
     W: std::io::Write,
 {
     inner: BufWriter<W>,
-    event_count: usize,
+    record_count: usize,
 }
 
 impl<W> StreamWriter<W>
@@ -159,17 +155,17 @@ where
 
         Self {
             inner: buf_writer,
-            event_count: 0,
+            record_count: 0,
         }
     }
 
     pub fn write_record(&mut self, record: Record) {
         postcard::to_io(&record, &mut self.inner).unwrap();
-        self.event_count += 1;
+        self.record_count += 1;
     }
 
-    pub fn event_count(&self) -> usize {
-        self.event_count
+    pub fn record_count(&self) -> usize {
+        self.record_count
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
@@ -204,26 +200,26 @@ pub fn from_file(filename: String) -> Vec<Record> {
 
     use std::io::Seek;
     file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
-    'event: for idx in 0_usize.. {
+    'record: for idx in 0_usize.. {
         let result = loop {
             let Ok(file_pos) = file_buffer.0.stream_position() else {
                 println!("at {idx} cannot get file position");
-                break 'event;
+                break 'record;
             };
 
             if file_pos >= end_pos {
                 let Ok(new_end_pos) = file_buffer.0.seek(SeekFrom::End(0)) else {
                     println!("at {idx} cannot get file length");
-                    break 'event;
+                    break 'record;
                 };
                 if new_end_pos <= end_pos {
-                    break 'event;
+                    break 'record;
                 }
 
                 end_pos = new_end_pos;
                 let Ok(_) = file_buffer.0.seek(SeekFrom::Start(0)) else {
                     println!("at {idx} cannot seek back to previous file position");
-                    break 'event;
+                    break 'record;
                 };
                 // Start loop from the beginning, even if this means we need to get the stream
                 // position again.
@@ -240,19 +236,19 @@ pub fn from_file(filename: String) -> Vec<Record> {
                             "excessive buffer required for element (> {MAX_BUFFER_SIZE}), skipping"
                         );
                         file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
-                        continue 'event;
+                        continue 'record;
                     }
                     buffer_vec.resize(new_size * 2, 0);
                     if let Err(err) = file.seek(SeekFrom::Start(file_pos)) {
                         println!("Could not seek back to start of element after making buffer bigger: {err}");
                         file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
-                        continue 'event;
+                        continue 'record;
                     }
                     file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
                     continue;
                 }
                 Err(err) => {
-                    println!("Received error deserializing event index {idx}: {err} ({err:?})",);
+                    println!("Received error deserializing record index {idx}: {err} ({err:?})",);
                     return Vec::default();
                 }
             };

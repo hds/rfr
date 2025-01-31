@@ -1,6 +1,8 @@
 use rfr::{
-    chunked::{ChunkInterval, EventRecord, Meta, Object, SeqChunk, SeqChunkBuffer},
-    common::{Event, Task, TaskId, TaskKind},
+    chunked::{
+        CallsiteId, ChunkInterval, Meta, Object, Record, RecordData, SeqChunk, SeqChunkBuffer,
+    },
+    common::{InstrumentationId, Task, TaskKind},
     rec::AbsTimestamp,
 };
 
@@ -14,13 +16,13 @@ fn round_trip() {
     ));
 
     let task = test_task(2);
-    let event = EventRecord {
+    let record = Record {
         meta: Meta {
             timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
-        event: Event::NewTask { id: task.task_id },
+        data: RecordData::TaskNew { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(event.clone(), |_task_ids| {
+    seq_chunk_buffer.append_record(record.clone(), |_task_ids| {
         vec![Some(Object::Task(task.clone()))]
     });
     seq_chunk_buffer.write(&mut buffer);
@@ -40,28 +42,28 @@ fn round_trip() {
     assert_eq!(seq_chunk.objects.len(), 1);
     assert_eq!(seq_chunk.objects[0], Object::Task(task));
 
-    assert_eq!(seq_chunk.events.len(), 1);
-    assert_eq!(seq_chunk.events[0], event);
+    assert_eq!(seq_chunk.records.len(), 1);
+    assert_eq!(seq_chunk.records[0], record);
 }
 
 #[test]
-fn skip_events_with_unknown_objects() {
+fn skip_records_with_unknown_objects() {
     let seq_chunk_buffer = SeqChunkBuffer::new(ChunkInterval::from_timestamp_and_period(
         AbsTimestamp::now(),
         1_000_000,
     ));
 
-    let event = EventRecord {
+    let record = Record {
         meta: Meta {
             timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
-        event: Event::NewTask {
-            id: TaskId::from(5),
+        data: RecordData::TaskNew {
+            iid: InstrumentationId::from(5),
         },
     };
-    seq_chunk_buffer.append_record(event.clone(), |_task_ids| vec![None]);
+    seq_chunk_buffer.append_record(record.clone(), |_task_ids| vec![None]);
 
-    assert_eq!(seq_chunk_buffer.event_count(), 0);
+    assert_eq!(seq_chunk_buffer.record_count(), 0);
 }
 
 #[test]
@@ -74,26 +76,26 @@ fn only_requests_object_once() {
     ));
 
     let task = test_task(2);
-    let event_1 = EventRecord {
+    let record_1 = Record {
         meta: Meta {
             timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
-        event: Event::NewTask { id: task.task_id },
+        data: RecordData::TaskNew { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(event_1, |task_ids| {
+    seq_chunk_buffer.append_record(record_1, |task_ids| {
         assert_eq!(task_ids.len(), 1);
-        assert_eq!(task_ids[0], TaskId::from(2));
+        assert_eq!(task_ids[0], InstrumentationId::from(2));
 
         vec![Some(Object::Task(task.clone()))]
     });
 
-    let event_2 = EventRecord {
+    let record_2 = Record {
         meta: Meta {
             timestamp: seq_chunk_buffer.chunk_timestamp(&AbsTimestamp::now()),
         },
-        event: Event::TaskDrop { id: task.task_id },
+        data: RecordData::TaskDrop { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(event_2, |task_ids| {
+    seq_chunk_buffer.append_record(record_2, |task_ids| {
         assert!(task_ids.is_empty());
 
         vec![]
@@ -102,11 +104,13 @@ fn only_requests_object_once() {
     seq_chunk_buffer.write(&mut buffer);
 }
 
-fn test_task(task_id: u64) -> Task {
+fn test_task(iid: u64) -> Task {
     Task {
-        task_id: task_id.into(),
+        iid: iid.into(),
+        callsite_id: CallsiteId::from(1),
         task_name: "Cool task".into(),
         task_kind: TaskKind::Task,
         context: None,
+        task_id: iid.into(),
     }
 }

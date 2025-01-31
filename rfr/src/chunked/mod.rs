@@ -15,13 +15,14 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
-    common::{Event, Task},
+    common::{Span, Task},
     rec::{self, AbsTimestamp},
     FormatIdentifier, FormatVariant,
 };
 
 mod callsite;
 mod meta;
+mod record;
 mod sequence;
 
 pub use callsite::{
@@ -29,6 +30,7 @@ pub use callsite::{
     NewChunkedCallsitesWriterError,
 };
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
+pub use record::{Meta, Record, RecordData};
 pub use sequence::{SeqChunk, SeqChunkBuffer};
 
 fn current_software_version() -> FormatIdentifier {
@@ -135,6 +137,15 @@ impl ChunkedWriter {
             .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S")))
     }
 
+    pub fn register_callsite(&self, callsite: Callsite) {
+        let mut callsites_writer = self
+            .callsites_writer
+            .lock()
+            .expect("callsite writer lock poisoned");
+        // TODO(hds): Should we try to avoid building a `Callsite` if it's going to be a duplicate?
+        callsites_writer.push_callsite(callsite);
+    }
+
     pub fn with_seq_chunk_buffer<F>(&self, timestamp: AbsTimestamp, f: F)
     where
         F: FnOnce(&SeqChunkBuffer),
@@ -195,7 +206,7 @@ impl ChunkedWriter {
     /// Once each chunk is written to disk, it is discarded.
     ///
     /// This method is still not race-condition safe, despite the buffer. If a thread is taking a
-    /// very long time to prepare an even before calling [`with_seq_chunk_buffer`], then an event
+    /// very long time to prepare an even before calling [`with_seq_chunk_buffer`], then a record
     /// may get lost.
     ///
     /// For this reason, [`with_seq_chunk_buffer`] should be called with a timestamp that is close
@@ -238,7 +249,7 @@ impl ChunkedWriter {
 
     /// Write all stored chunks to disk.
     ///
-    /// The chunks are not discarded after being written. If further events are written to the
+    /// The chunks are not discarded after being written. If further records are written to the
     /// contained sequence chunks, then they can be written to disk at a later time with subsequent
     /// calls to [`write_completed_chunks`] or [`write_all_chunks`].
     pub fn write_all_chunks(&self) {
@@ -375,8 +386,8 @@ impl AbsTimestampSecs {
 
 // A timestamp within a chunk.
 //
-// A chunk timestamp represents the time of an event with respect to the chunk's base time. It is
-// stored as the number of microseconds since the base time. All events within a chunk must occur
+// A chunk timestamp represents the time of a record with respect to the chunk's base time. It is
+// stored as the number of microseconds since the base time. All records within a chunk must occur
 // at the base time or afterwards.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, PartialOrd, Ord, Eq, Deserialize, Serialize)]
 pub struct ChunkTimestamp {
@@ -430,22 +441,10 @@ impl ChunkTimestamp {
     }
 }
 
-/// Metadata for an [`EventRecord`].
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Meta {
-    /// The timestamp that the event occurs at.
-    pub timestamp: ChunkTimestamp,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct EventRecord {
-    pub meta: Meta,
-    pub event: Event,
-}
-
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Object {
+    Span(Span),
     Task(Task),
 }
 

@@ -8,13 +8,14 @@ use tracing::{span, subscriber::Interest, Dispatch, Event, Metadata, Subscriber}
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use rfr::{
+    chunked::CallsiteId,
     common,
     rec::{self, StreamWriter},
 };
 
 use crate::subscriber::common::{
-    get_context_task_id, CallsiteId, EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind,
-    TraceKind, WakerEvent, WakerFields, WakerOp,
+    get_context_task_iid, to_callsite_id, to_iid, EventKind, SpanKind, SpawnFields, SpawnSpan,
+    TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
 };
 
 pub struct RfrLayer {
@@ -68,12 +69,12 @@ where
     fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
         match TraceKind::try_from(metadata) {
             Ok(kind) => {
-                let callsite = CallsiteId::from(metadata);
+                let callsite_id = to_callsite_id(metadata);
                 let mut callsite_cache = self
                     .callsite_cache
                     .lock()
                     .expect("callsite cache is poisoned");
-                callsite_cache.entry(callsite).or_insert(kind);
+                callsite_cache.entry(callsite_id).or_insert(kind);
 
                 Interest::always()
             }
@@ -83,10 +84,10 @@ where
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let rec_meta = rec::Meta::now();
-        let callsite = CallsiteId::from(attrs.metadata());
+        let callsite_id = to_callsite_id(attrs.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
-            let Some(kind) = callsite_cache.get(&callsite).cloned() else {
+            let Some(kind) = callsite_cache.get(&callsite_id).cloned() else {
                 return;
             };
             kind
@@ -98,9 +99,9 @@ where
                 if !fields.is_valid() {
                     return;
                 }
-                let context = get_context_task_id(&ctx);
+                let context = get_context_task_iid(&ctx);
 
-                let spawn = SpawnSpan::new(callsite, id.clone(), context, fields);
+                let spawn = SpawnSpan::new(callsite_id, id.clone(), context, fields);
 
                 let span = ctx
                     .span(id)
@@ -112,23 +113,27 @@ where
                 {
                     let mut guard = self.writer.lock().unwrap();
                     let task_id = common::TaskId::from(spawn.task_id.0);
-                    let task_event = rec::Event::Task(common::Task {
-                        task_id,
-                        task_name: spawn.task_name,
-                        task_kind: match spawn.task_kind {
-                            TaskKind::Task => common::TaskKind::Task,
-                            TaskKind::Local => common::TaskKind::Local,
-                            TaskKind::Blocking => common::TaskKind::Blocking,
-                            TaskKind::BlockOn => common::TaskKind::BlockOn,
-                            TaskKind::Other(val) => common::TaskKind::Other(val),
+                    let task_data = rec::RecordData::Task {
+                        task: common::Task {
+                            iid: spawn.iid,
+                            callsite_id: spawn.callsite_id,
+                            task_id,
+                            task_name: spawn.task_name,
+                            task_kind: match spawn.task_kind {
+                                TaskKind::Task => common::TaskKind::Task,
+                                TaskKind::Local => common::TaskKind::Local,
+                                TaskKind::Blocking => common::TaskKind::Blocking,
+                                TaskKind::BlockOn => common::TaskKind::BlockOn,
+                                TaskKind::Other(val) => common::TaskKind::Other(val),
+                            },
+
+                            context: spawn.context,
                         },
+                    };
+                    let task_new = rec::RecordData::TaskNew { iid: spawn.iid };
 
-                        context: spawn.context.map(|task_id| common::TaskId::from(task_id.0)),
-                    });
-                    let new_event = rec::Event::NewTask { id: task_id };
-
-                    (*guard).write_record(rec::Record::new(rec_meta.clone(), task_event));
-                    (*guard).write_record(rec::Record::new(rec_meta, new_event));
+                    (*guard).write_record(rec::Record::new(rec_meta.clone(), task_data));
+                    (*guard).write_record(rec::Record::new(rec_meta, task_new));
                 }
             }
             _ => {
@@ -139,10 +144,10 @@ where
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let rec_meta = rec::Meta::now();
-        let callsite = CallsiteId::from(event.metadata());
+        let callsite_id = to_callsite_id(event.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
-            let Some(kind) = callsite_cache.get(&callsite).cloned() else {
+            let Some(kind) = callsite_cache.get(&callsite_id).cloned() else {
                 return;
             };
             kind
@@ -156,31 +161,20 @@ where
                 }
                 let op = fields.op.unwrap();
                 let task_span_id = fields.task_span_id.unwrap();
-                let Some(task_id) = ctx
-                    .span(&task_span_id)
-                    .and_then(|span| span.extensions().get().cloned())
-                else {
-                    // We can't find the task id for the task we're supposed to be waking.
-                    return;
+
+                let mut guard = self.writer.lock().unwrap();
+                let waker = common::Waker {
+                    task_iid: to_iid(&task_span_id),
+                    context: ctx.current_span().id().map(to_iid),
                 };
-                let context = get_context_task_id(&ctx);
+                let waker_data = match op {
+                    WakerOp::Wake => rec::RecordData::WakerWake { waker },
+                    WakerOp::WakeByRef => rec::RecordData::WakerWakeByRef { waker },
+                    WakerOp::Clone => rec::RecordData::WakerClone { waker },
+                    WakerOp::Drop => rec::RecordData::WakerDrop { waker },
+                };
 
-                let waker = WakerEvent::new(op, task_id, context, callsite);
-                {
-                    let mut guard = self.writer.lock().unwrap();
-                    let waker_action = rec::Event::WakerOp(rec::WakerAction {
-                        op: match waker.op {
-                            WakerOp::Wake => rec::WakerOp::Wake,
-                            WakerOp::WakeByRef => rec::WakerOp::WakeByRef,
-                            WakerOp::Clone => rec::WakerOp::Clone,
-                            WakerOp::Drop => rec::WakerOp::Drop,
-                        },
-                        task_id: common::TaskId::from(waker.task_id.0),
-                        context: waker.context.map(|task_id| common::TaskId::from(task_id.0)),
-                    });
-
-                    (*guard).write_record(rec::Record::new(rec_meta, waker_action));
-                }
+                (*guard).write_record(rec::Record::new(rec_meta, waker_data));
             }
             _ => {
                 // Not yet implemented
@@ -192,15 +186,12 @@ where
         let rec_meta = rec::Meta::now();
         let span = ctx.span(id).expect("enter {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
-                let poll_start = rec::Event::TaskPollStart { id: task_id };
+            let mut guard = self.writer.lock().unwrap();
+            let poll_start = rec::RecordData::TaskPollStart { iid: to_iid(id) };
 
-                guard.write_record(rec::Record::new(rec_meta, poll_start));
-            }
+            guard.write_record(rec::Record::new(rec_meta, poll_start));
         }
     }
 
@@ -208,15 +199,12 @@ where
         let rec_meta = rec::Meta::now();
         let span = ctx.span(id).expect("exit {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
-                let poll_end = rec::Event::TaskPollEnd { id: task_id };
+            let mut guard = self.writer.lock().unwrap();
+            let poll_end = rec::RecordData::TaskPollEnd { iid: to_iid(id) };
 
-                (*guard).write_record(rec::Record::new(rec_meta, poll_end));
-            }
+            (*guard).write_record(rec::Record::new(rec_meta, poll_end));
         }
     }
 
@@ -226,15 +214,12 @@ where
             .span(&id)
             .expect("close {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let mut guard = self.writer.lock().unwrap();
-                let task_id = common::TaskId::from(task_id.0);
-                let task_drop = rec::Event::TaskDrop { id: task_id };
+            let mut guard = self.writer.lock().unwrap();
+            let task_drop = rec::RecordData::TaskDrop { iid: to_iid(&id) };
 
-                (*guard).write_record(rec::Record::new(rec_meta, task_drop));
-            }
+            (*guard).write_record(rec::Record::new(rec_meta, task_drop));
         }
     }
 }

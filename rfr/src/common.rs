@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::chunked::CallsiteId;
+
 /// The level of a span or event.
 ///
 /// The `tracing` levels are mapped as per the [Bunyan level suggestions].
@@ -39,7 +41,7 @@ pub struct Field {
 
 /// The name (key) of a field.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct FieldName(String);
+pub struct FieldName(pub String);
 
 /// The value of a field.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -58,6 +60,45 @@ pub enum FieldValue {
     Bool(bool),
     /// String
     Str(String),
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+pub struct InstrumentationId(u64);
+
+impl From<u64> for InstrumentationId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl InstrumentationId {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Span {
+    iid: InstrumentationId,
+    callsite_id: CallsiteId,
+    parent: Parent,
+    split_field_values: Vec<FieldValue>,
+    dynamic_fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub enum Parent {
+    Current,
+    Root,
+    Explicit { iid: InstrumentationId },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Event {
+    callsite_id: CallsiteId,
+    parent: Parent,
+    split_field_values: Vec<FieldValue>,
+    dynamic_fields: Vec<Field>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -86,28 +127,17 @@ pub enum TaskKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Task {
+    pub iid: InstrumentationId,
+    pub callsite_id: CallsiteId,
     pub task_id: TaskId,
     pub task_name: String,
     pub task_kind: TaskKind,
 
-    pub context: Option<TaskId>,
+    pub context: Option<InstrumentationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Waker {
-    pub task_id: TaskId,
-    pub context: Option<TaskId>,
-}
-
-#[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub enum Event {
-    NewTask { id: TaskId },
-    TaskPollStart { id: TaskId },
-    TaskPollEnd { id: TaskId },
-    TaskDrop { id: TaskId },
-    WakerWake { waker: Waker },
-    WakerWakeByRef { waker: Waker },
-    WakerClone { waker: Waker },
-    WakerDrop { waker: Waker },
+    pub task_iid: InstrumentationId,
+    pub context: Option<InstrumentationId>,
 }

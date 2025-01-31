@@ -1,8 +1,8 @@
 use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
 
 use rfr::{
-    chunked,
-    common::{Event, Task, TaskId, Waker},
+    chunked::{self, RecordData},
+    common::{InstrumentationId, Task},
     rec::{self, from_file, AbsTimestamp, WinTimestamp},
 };
 
@@ -102,7 +102,7 @@ impl TaskEvents {
 #[derive(Debug)]
 pub(crate) struct EventRecord {
     pub(crate) timestamp: AbsTimestamp,
-    pub(crate) event: Event,
+    pub(crate) data: chunked::RecordData,
 }
 
 trait TaskEventsCollect {
@@ -175,7 +175,7 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
                 println!("    - {object:?}");
             }
             println!("  - Events:");
-            for events in &seq_chunk.events {
+            for events in &seq_chunk.records {
                 println!("    - {events:?}");
             }
         }
@@ -221,30 +221,30 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
             for object in &seq_chunk.objects {
                 if let chunked::Object::Task(task) = object {
                     tasks
-                        .entry(task.task_id)
+                        .entry(task.iid)
                         .or_insert_with(|| TaskEvents::new(task.clone()));
                 }
             }
 
-            for record in &seq_chunk.events {
-                let task_id = match &record.event {
-                    Event::NewTask { id }
-                    | Event::TaskPollStart { id }
-                    | Event::TaskPollEnd { id }
-                    | Event::TaskDrop { id } => id,
-                    Event::WakerWake { waker }
-                    | Event::WakerWakeByRef { waker }
-                    | Event::WakerClone { waker }
-                    | Event::WakerDrop { waker } => &waker.task_id,
+            for record in &seq_chunk.records {
+                let task_iid = match &record.data {
+                    RecordData::TaskNew { iid }
+                    | RecordData::TaskPollStart { iid }
+                    | RecordData::TaskPollEnd { iid }
+                    | RecordData::TaskDrop { iid } => iid,
+                    RecordData::WakerWake { waker }
+                    | RecordData::WakerWakeByRef { waker }
+                    | RecordData::WakerClone { waker }
+                    | RecordData::WakerDrop { waker } => &waker.task_iid,
                     _ => continue,
                 };
 
                 let record = EventRecord {
                     timestamp: chunk.abs_timestamp(&record.meta.timestamp),
-                    event: record.event.clone(),
+                    data: record.data.clone(),
                 };
 
-                tasks.entry(*task_id).and_modify(|r| r.events.push(record));
+                tasks.entry(*task_iid).and_modify(|r| r.events.push(record));
             }
         }
     }
@@ -264,37 +264,61 @@ pub(crate) fn collect_into_tasks_from_streaming_records(
     let mut tasks = HashMap::new();
 
     for record in records {
-        if let rec::Event::Task(task) = &record.event {
+        if let rec::RecordData::End = &record.data {
+            // This should be the end of the list of records.
+            // FIXME: Break?
+        } else if let rec::RecordData::Callsite { callsite } = &record.data {
+            // TODO: Do something with the Callsite to support Spans and Events.
+            _ = callsite;
+        } else if let rec::RecordData::Task { task } = &record.data {
             let task_entry = TaskEvents::new(task.clone());
-            tasks.insert(task.task_id, task_entry);
+            tasks.insert(task.iid, task_entry);
         } else {
-            let (event, task_id) = match &record.event {
-                rec::Event::NewTask { id } => (Event::NewTask { id: *id }, *id),
-                rec::Event::TaskPollStart { id } => (Event::TaskPollStart { id: *id }, *id),
-                rec::Event::TaskPollEnd { id } => (Event::TaskPollEnd { id: *id }, *id),
-                rec::Event::TaskDrop { id } => (Event::TaskDrop { id: *id }, *id),
-                rec::Event::WakerOp(action) => {
-                    let waker = Waker {
-                        task_id: action.task_id,
-                        context: action.context,
-                    };
-                    let event = match action.op {
-                        rec::WakerOp::Wake => Event::WakerWake { waker },
-                        rec::WakerOp::WakeByRef => Event::WakerWakeByRef { waker },
-                        rec::WakerOp::Clone => Event::WakerClone { waker },
-                        rec::WakerOp::Drop => Event::WakerDrop { waker },
-                    };
-                    (event, action.task_id)
+            let (event, iid) = match &record.data {
+                rec::RecordData::TaskNew { iid } => (RecordData::TaskNew { iid: *iid }, *iid),
+                rec::RecordData::TaskPollStart { iid } => {
+                    (RecordData::TaskPollStart { iid: *iid }, *iid)
                 }
-                rec::Event::Task(_) => {
+                rec::RecordData::TaskPollEnd { iid } => {
+                    (RecordData::TaskPollEnd { iid: *iid }, *iid)
+                }
+                rec::RecordData::TaskDrop { iid } => (RecordData::TaskDrop { iid: *iid }, *iid),
+                rec::RecordData::WakerWake { waker } => (
+                    RecordData::WakerWake {
+                        waker: waker.clone(),
+                    },
+                    waker.task_iid,
+                ),
+                rec::RecordData::WakerWakeByRef { waker } => (
+                    RecordData::WakerWakeByRef {
+                        waker: waker.clone(),
+                    },
+                    waker.task_iid,
+                ),
+                rec::RecordData::WakerClone { waker } => (
+                    RecordData::WakerClone {
+                        waker: waker.clone(),
+                    },
+                    waker.task_iid,
+                ),
+                rec::RecordData::WakerDrop { waker } => (
+                    RecordData::WakerDrop {
+                        waker: waker.clone(),
+                    },
+                    waker.task_iid,
+                ),
+                rec::RecordData::Task { task: _ } => {
                     unreachable!("task events have already been filtered out")
+                }
+                _ => {
+                    todo!("support for spans and events no yet implemented")
                 }
             };
             let record = EventRecord {
                 timestamp: record.meta.timestamp.clone(),
-                event,
+                data: event,
             };
-            tasks.entry(task_id).and_modify(|r| r.events.push(record));
+            tasks.entry(iid).and_modify(|r| r.events.push(record));
         }
     }
 
@@ -434,7 +458,7 @@ pub(crate) fn collect_into_rows(
     tasks_events: Vec<TaskEvents>,
 ) -> Vec<TaskRow> {
     let mut tasks_events = tasks_events;
-    tasks_events.sort_by_key(|t| t.task.task_id);
+    tasks_events.sort_by_key(|t| t.task.iid);
 
     let tasks_with_indicies: Vec<_> = tasks_events
         .into_iter()
@@ -443,9 +467,11 @@ pub(crate) fn collect_into_rows(
         .collect();
     let task_indices: HashMap<_, _> = tasks_with_indicies
         .iter()
-        .map(|(idx, task_events)| (task_events.task.task_id, *idx))
+        .map(|(idx, task_events)| (task_events.task.iid, *idx))
         .collect();
-    let get_index = |task_id: Option<TaskId>| task_id.and_then(|id| task_indices.get(&id).copied());
+    let get_index = |task_iid: Option<InstrumentationId>| {
+        task_iid.and_then(|iid| task_indices.get(&iid).copied())
+    };
 
     let mut task_rows = Vec::new();
     for (index, TaskEvents { task, events }) in tasks_with_indicies {
@@ -454,7 +480,7 @@ pub(crate) fn collect_into_rows(
         }
 
         let first = &events.first().expect("events is not empty");
-        let start_time = if let Event::NewTask { .. } = &first.event {
+        let start_time = if let RecordData::TaskNew { .. } = &first.data {
             // The event starts within this window
             win_time_handle.window_time(&first.timestamp)
         } else {
@@ -470,8 +496,8 @@ pub(crate) fn collect_into_rows(
         for rec in events {
             let ts = task_time_handle.task_time(&win_time_handle.window_time(&rec.timestamp));
 
-            match &rec.event {
-                Event::NewTask { .. } => {
+            match &rec.data {
+                RecordData::TaskNew { .. } => {
                     debug_assert!(spawn_event.is_none(), "multiple NewTask events");
                     spawn_event = Some(SpawnEvent {
                         ts: ts.clone(),
@@ -484,25 +510,25 @@ pub(crate) fn collect_into_rows(
                         kind: TaskEventKind::New,
                     });
                 }
-                Event::TaskPollStart { .. } => task_events.push(TaskEvent {
+                RecordData::TaskPollStart { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::PollStart,
                 }),
-                Event::TaskPollEnd { .. } => task_events.push(TaskEvent {
+                RecordData::TaskPollEnd { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::PollEnd,
                 }),
-                Event::TaskDrop { .. } => task_events.push(TaskEvent {
+                RecordData::TaskDrop { .. } => task_events.push(TaskEvent {
                     ts,
                     kind: TaskEventKind::Drop,
                 }),
-                Event::WakerWake { waker } => {
+                RecordData::WakerWake { waker } => {
                     task_events.push(TaskEvent {
                         ts: ts.clone(),
                         kind: TaskEventKind::Wake,
                     });
 
-                    let kind = if Some(waker.task_id) == waker.context {
+                    let kind = if Some(waker.task_iid) == waker.context {
                         WakeEventKind::SelfWake
                     } else {
                         WakeEventKind::Wake {
@@ -512,13 +538,13 @@ pub(crate) fn collect_into_rows(
 
                     wake_events.push(WakeEvent { ts, kind });
                 }
-                Event::WakerWakeByRef { waker } => {
+                RecordData::WakerWakeByRef { waker } => {
                     task_events.push(TaskEvent {
                         ts: ts.clone(),
                         kind: TaskEventKind::Wake,
                     });
 
-                    let kind = if Some(waker.task_id) == waker.context {
+                    let kind = if Some(waker.task_iid) == waker.context {
                         WakeEventKind::SelfWakeByRef
                     } else {
                         WakeEventKind::WakeByRef {
@@ -528,11 +554,11 @@ pub(crate) fn collect_into_rows(
 
                     wake_events.push(WakeEvent { ts, kind });
                 }
-                Event::WakerClone { .. } => wake_events.push(WakeEvent {
+                RecordData::WakerClone { .. } => wake_events.push(WakeEvent {
                     ts,
                     kind: WakeEventKind::Clone,
                 }),
-                Event::WakerDrop { .. } => wake_events.push(WakeEvent {
+                RecordData::WakerDrop { .. } => wake_events.push(WakeEvent {
                     ts,
                     kind: WakeEventKind::Drop,
                 }),
