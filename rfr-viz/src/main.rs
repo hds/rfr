@@ -6,7 +6,7 @@ use rfr::common::TaskKind;
 mod collect;
 
 use crate::collect::{
-    chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnEventKind,
+    chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnRecordKind,
 };
 
 #[derive(Parser, Debug)]
@@ -97,13 +97,13 @@ fn write_viz(writer: impl io::Write, info: RecordingInfo, name: String) {
 
         if let Some(spawn) = row.spawn {
             let by_config = match &spawn.kind {
-                SpawnEventKind::Spawn { by: Some(by_index) } if by_index > &row.index => {
+                SpawnRecordKind::Spawn { by: Some(by_index) } if by_index > &row.index => {
                     Some((by_index.as_inner() - row.index.as_inner(), "up", "-"))
                 }
-                SpawnEventKind::Spawn { by: Some(by_index) } if by_index < &row.index => {
+                SpawnRecordKind::Spawn { by: Some(by_index) } if by_index < &row.index => {
                     Some((row.index.as_inner() - by_index.as_inner(), "down", "+"))
                 }
-                SpawnEventKind::Spawn { by: Some(_) } => None,
+                SpawnRecordKind::Spawn { by: Some(_) } => None,
                 _ => None,
             };
             write!(out_fh,
@@ -118,9 +118,8 @@ fn write_viz(writer: impl io::Write, info: RecordingInfo, name: String) {
 
         for waking in row.wakings {
             let by_index = match waking.kind {
-                collect::WakeEventKind::Wake { by } | collect::WakeEventKind::WakeByRef { by } => {
-                    by
-                }
+                collect::WakeRecordKind::Wake { by }
+                | collect::WakeRecordKind::WakeByRef { by } => by,
                 _ => None,
             };
             let by_config = by_index.and_then(|by_index| match by_index.cmp(&row.index) {

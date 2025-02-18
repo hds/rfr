@@ -85,35 +85,35 @@ pub(crate) struct RecordingInfo {
 }
 
 #[derive(Debug)]
-pub(crate) struct TaskEvents {
+pub(crate) struct TaskRecords {
     pub(crate) task: Task,
-    pub(crate) events: Vec<EventRecord>,
+    pub(crate) records: Vec<Record>,
 }
 
-impl TaskEvents {
+impl TaskRecords {
     fn new(task: Task) -> Self {
         Self {
             task,
-            events: Vec::new(),
+            records: Vec::new(),
         }
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct EventRecord {
+pub(crate) struct Record {
     pub(crate) timestamp: AbsTimestamp,
     pub(crate) data: chunked::RecordData,
 }
 
-trait TaskEventsCollect {
-    fn collect_into_tasks(&mut self) -> Vec<TaskEvents>;
+trait TaskRecordsCollect {
+    fn collect_into_tasks(&mut self) -> Vec<TaskRecords>;
 
     fn earliest_timestamp(&mut self) -> Option<AbsTimestamp>;
     fn latest_timestamp(&mut self) -> Option<AbsTimestamp>;
 }
 
-impl TaskEventsCollect for Vec<rec::Record> {
-    fn collect_into_tasks(&mut self) -> Vec<TaskEvents> {
+impl TaskRecordsCollect for Vec<rec::Record> {
+    fn collect_into_tasks(&mut self) -> Vec<TaskRecords> {
         if self.is_empty() {
             return vec![];
         }
@@ -130,8 +130,8 @@ impl TaskEventsCollect for Vec<rec::Record> {
     }
 }
 
-impl TaskEventsCollect for chunked::Recording {
-    fn collect_into_tasks(&mut self) -> Vec<TaskEvents> {
+impl TaskRecordsCollect for chunked::Recording {
+    fn collect_into_tasks(&mut self) -> Vec<TaskRecords> {
         collect_into_tasks_from_chunked_recording(self)
     }
 
@@ -174,9 +174,9 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
             for object in &seq_chunk.objects {
                 println!("    - {object:?}");
             }
-            println!("  - Events:");
-            for events in &seq_chunk.records {
-                println!("    - {events:?}");
+            println!("  - Records:");
+            for records in &seq_chunk.records {
+                println!("    - {records:?}");
             }
         }
     }
@@ -185,7 +185,7 @@ pub(crate) fn chunked_recording_info(path: String) -> Option<RecordingInfo> {
     create_recording_info(recording)
 }
 
-fn create_recording_info(recording: impl TaskEventsCollect) -> Option<RecordingInfo> {
+fn create_recording_info(recording: impl TaskRecordsCollect) -> Option<RecordingInfo> {
     let mut recording = recording;
 
     let start_timestamp = recording.earliest_timestamp()?;
@@ -194,11 +194,11 @@ fn create_recording_info(recording: impl TaskEventsCollect) -> Option<RecordingI
     let end_timestamp = recording.latest_timestamp()?;
     let end_time = win_time_handle.window_time(&end_timestamp);
 
-    let tasks_events = recording.collect_into_tasks();
-    if tasks_events.is_empty() {
+    let tasks_records = recording.collect_into_tasks();
+    if tasks_records.is_empty() {
         return None;
     }
-    let task_rows = collect_into_rows(&win_time_handle, tasks_events);
+    let task_rows = collect_into_rows(&win_time_handle, tasks_records);
     if task_rows.is_empty() {
         return None;
     }
@@ -212,7 +212,7 @@ fn create_recording_info(recording: impl TaskEventsCollect) -> Option<RecordingI
 
 pub(crate) fn collect_into_tasks_from_chunked_recording(
     recording: &mut chunked::Recording,
-) -> Vec<TaskEvents> {
+) -> Vec<TaskRecords> {
     let mut tasks = HashMap::new();
 
     for chunk in recording.chunks_lossy() {
@@ -222,7 +222,7 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
                 if let chunked::Object::Task(task) = object {
                     tasks
                         .entry(task.iid)
-                        .or_insert_with(|| TaskEvents::new(task.clone()));
+                        .or_insert_with(|| TaskRecords::new(task.clone()));
                 }
             }
 
@@ -239,28 +239,30 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
                     _ => continue,
                 };
 
-                let record = EventRecord {
+                let record = Record {
                     timestamp: chunk.abs_timestamp(&record.meta.timestamp),
                     data: record.data.clone(),
                 };
 
-                tasks.entry(*task_iid).and_modify(|r| r.events.push(record));
+                tasks
+                    .entry(*task_iid)
+                    .and_modify(|r| r.records.push(record));
             }
         }
     }
 
     tasks
         .into_values()
-        .map(|mut task_events| {
-            task_events.events.sort_by_key(|r| r.timestamp.clone());
-            task_events
+        .map(|mut task_records| {
+            task_records.records.sort_by_key(|r| r.timestamp.clone());
+            task_records
         })
         .collect()
 }
 
 pub(crate) fn collect_into_tasks_from_streaming_records(
     records: &Vec<rec::Record>,
-) -> Vec<TaskEvents> {
+) -> Vec<TaskRecords> {
     let mut tasks = HashMap::new();
 
     for record in records {
@@ -271,10 +273,10 @@ pub(crate) fn collect_into_tasks_from_streaming_records(
             // TODO: Do something with the Callsite to support Spans and Events.
             _ = callsite;
         } else if let rec::RecordData::Task { task } = &record.data {
-            let task_entry = TaskEvents::new(task.clone());
+            let task_entry = TaskRecords::new(task.clone());
             tasks.insert(task.iid, task_entry);
         } else {
-            let (event, iid) = match &record.data {
+            let (record_data, iid) = match &record.data {
                 rec::RecordData::TaskNew { iid } => (RecordData::TaskNew { iid: *iid }, *iid),
                 rec::RecordData::TaskPollStart { iid } => {
                     (RecordData::TaskPollStart { iid: *iid }, *iid)
@@ -308,17 +310,17 @@ pub(crate) fn collect_into_tasks_from_streaming_records(
                     waker.task_iid,
                 ),
                 rec::RecordData::Task { task: _ } => {
-                    unreachable!("task events have already been filtered out")
+                    unreachable!("task records have already been filtered out")
                 }
                 _ => {
                     todo!("support for spans and events no yet implemented")
                 }
             };
-            let record = EventRecord {
+            let record = Record {
                 timestamp: record.meta.timestamp.clone(),
-                data: event,
+                data: record_data,
             };
-            tasks.entry(iid).and_modify(|r| r.events.push(record));
+            tasks.entry(iid).and_modify(|r| r.records.push(record));
         }
     }
 
@@ -330,8 +332,8 @@ pub(crate) struct TaskRow {
     pub(crate) start_time: rec::WinTimestamp,
     pub(crate) task: Task,
     pub(crate) sections: Vec<TaskSection>,
-    pub(crate) spawn: Option<SpawnEvent>,
-    pub(crate) wakings: Vec<WakeEvent>,
+    pub(crate) spawn: Option<SpawnRecord>,
+    pub(crate) wakings: Vec<WakeRecord>,
 }
 
 #[derive(Debug)]
@@ -364,13 +366,13 @@ impl fmt::Display for TaskState {
 }
 
 #[derive(Debug, Clone)]
-struct TaskEvent {
+struct TaskRecord {
     ts: TaskTimestamp,
-    kind: TaskEventKind,
+    kind: TaskRecordKind,
 }
 
 #[derive(Debug, Clone)]
-enum TaskEventKind {
+enum TaskRecordKind {
     New,
     PollStart,
     PollEnd,
@@ -378,7 +380,7 @@ enum TaskEventKind {
     Wake,
 }
 
-impl fmt::Display for TaskEventKind {
+impl fmt::Display for TaskRecordKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -395,13 +397,13 @@ impl fmt::Display for TaskEventKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WakeEvent {
+pub(crate) struct WakeRecord {
     pub(crate) ts: TaskTimestamp,
-    pub(crate) kind: WakeEventKind,
+    pub(crate) kind: WakeRecordKind,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum WakeEventKind {
+pub(crate) enum WakeRecordKind {
     Wake { by: Option<TaskIndex> },
     WakeByRef { by: Option<TaskIndex> },
     SelfWake,
@@ -410,7 +412,7 @@ pub(crate) enum WakeEventKind {
     Drop,
 }
 
-impl fmt::Display for WakeEventKind {
+impl fmt::Display for WakeRecordKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -428,13 +430,13 @@ impl fmt::Display for WakeEventKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SpawnEvent {
+pub(crate) struct SpawnRecord {
     pub(crate) ts: TaskTimestamp,
-    pub(crate) kind: SpawnEventKind,
+    pub(crate) kind: SpawnRecordKind,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum SpawnEventKind {
+pub(crate) enum SpawnRecordKind {
     Spawn { by: Option<TaskIndex> },
 }
 
@@ -455,33 +457,33 @@ impl TaskIndex {
 
 pub(crate) fn collect_into_rows(
     win_time_handle: &WinTimeHandle,
-    tasks_events: Vec<TaskEvents>,
+    tasks_records: Vec<TaskRecords>,
 ) -> Vec<TaskRow> {
-    let mut tasks_events = tasks_events;
-    tasks_events.sort_by_key(|t| t.task.iid);
+    let mut tasks_records = tasks_records;
+    tasks_records.sort_by_key(|t| t.task.iid);
 
-    let tasks_with_indicies: Vec<_> = tasks_events
+    let tasks_with_indicies: Vec<_> = tasks_records
         .into_iter()
         .enumerate()
-        .map(|(idx, task_events)| (TaskIndex::new(idx), task_events))
+        .map(|(idx, task_records)| (TaskIndex::new(idx), task_records))
         .collect();
     let task_indices: HashMap<_, _> = tasks_with_indicies
         .iter()
-        .map(|(idx, task_events)| (task_events.task.iid, *idx))
+        .map(|(idx, task_records)| (task_records.task.iid, *idx))
         .collect();
     let get_index = |task_iid: Option<InstrumentationId>| {
         task_iid.and_then(|iid| task_indices.get(&iid).copied())
     };
 
     let mut task_rows = Vec::new();
-    for (index, TaskEvents { task, events }) in tasks_with_indicies {
-        if events.is_empty() {
+    for (index, TaskRecords { task, records }) in tasks_with_indicies {
+        if records.is_empty() {
             continue;
         }
 
-        let first = &events.first().expect("events is not empty");
+        let first = &records.first().expect("records is not empty");
         let start_time = if let RecordData::TaskNew { .. } = &first.data {
-            // The event starts within this window
+            // The record starts within this window
             win_time_handle.window_time(&first.timestamp)
         } else {
             // The task started before this window, so we set the task time to start with
@@ -490,97 +492,97 @@ pub(crate) fn collect_into_rows(
         };
         let task_time_handle = TaskTimeHandle::new(start_time.clone());
 
-        let mut task_events = Vec::new();
-        let mut wake_events = Vec::new();
-        let mut spawn_event = None;
-        for rec in events {
+        let mut task_records = Vec::new();
+        let mut wake_records = Vec::new();
+        let mut spawn_record = None;
+        for rec in records {
             let ts = task_time_handle.task_time(&win_time_handle.window_time(&rec.timestamp));
 
             match &rec.data {
                 RecordData::TaskNew { .. } => {
-                    debug_assert!(spawn_event.is_none(), "multiple NewTask events");
-                    spawn_event = Some(SpawnEvent {
+                    debug_assert!(spawn_record.is_none(), "multiple NewTask records");
+                    spawn_record = Some(SpawnRecord {
                         ts: ts.clone(),
-                        kind: SpawnEventKind::Spawn {
+                        kind: SpawnRecordKind::Spawn {
                             by: get_index(task.context),
                         },
                     });
-                    task_events.push(TaskEvent {
+                    task_records.push(TaskRecord {
                         ts,
-                        kind: TaskEventKind::New,
+                        kind: TaskRecordKind::New,
                     });
                 }
-                RecordData::TaskPollStart { .. } => task_events.push(TaskEvent {
+                RecordData::TaskPollStart { .. } => task_records.push(TaskRecord {
                     ts,
-                    kind: TaskEventKind::PollStart,
+                    kind: TaskRecordKind::PollStart,
                 }),
-                RecordData::TaskPollEnd { .. } => task_events.push(TaskEvent {
+                RecordData::TaskPollEnd { .. } => task_records.push(TaskRecord {
                     ts,
-                    kind: TaskEventKind::PollEnd,
+                    kind: TaskRecordKind::PollEnd,
                 }),
-                RecordData::TaskDrop { .. } => task_events.push(TaskEvent {
+                RecordData::TaskDrop { .. } => task_records.push(TaskRecord {
                     ts,
-                    kind: TaskEventKind::Drop,
+                    kind: TaskRecordKind::Drop,
                 }),
                 RecordData::WakerWake { waker } => {
-                    task_events.push(TaskEvent {
+                    task_records.push(TaskRecord {
                         ts: ts.clone(),
-                        kind: TaskEventKind::Wake,
+                        kind: TaskRecordKind::Wake,
                     });
 
                     let kind = if Some(waker.task_iid) == waker.context {
-                        WakeEventKind::SelfWake
+                        WakeRecordKind::SelfWake
                     } else {
-                        WakeEventKind::Wake {
+                        WakeRecordKind::Wake {
                             by: get_index(waker.context),
                         }
                     };
 
-                    wake_events.push(WakeEvent { ts, kind });
+                    wake_records.push(WakeRecord { ts, kind });
                 }
                 RecordData::WakerWakeByRef { waker } => {
-                    task_events.push(TaskEvent {
+                    task_records.push(TaskRecord {
                         ts: ts.clone(),
-                        kind: TaskEventKind::Wake,
+                        kind: TaskRecordKind::Wake,
                     });
 
                     let kind = if Some(waker.task_iid) == waker.context {
-                        WakeEventKind::SelfWakeByRef
+                        WakeRecordKind::SelfWakeByRef
                     } else {
-                        WakeEventKind::WakeByRef {
+                        WakeRecordKind::WakeByRef {
                             by: get_index(waker.context),
                         }
                     };
 
-                    wake_events.push(WakeEvent { ts, kind });
+                    wake_records.push(WakeRecord { ts, kind });
                 }
-                RecordData::WakerClone { .. } => wake_events.push(WakeEvent {
+                RecordData::WakerClone { .. } => wake_records.push(WakeRecord {
                     ts,
-                    kind: WakeEventKind::Clone,
+                    kind: WakeRecordKind::Clone,
                 }),
-                RecordData::WakerDrop { .. } => wake_events.push(WakeEvent {
+                RecordData::WakerDrop { .. } => wake_records.push(WakeRecord {
                     ts,
-                    kind: WakeEventKind::Drop,
+                    kind: WakeRecordKind::Drop,
                 }),
-                _ => continue, // Skip unknown events
+                _ => continue, // Skip unknown records
             }
         }
 
         let mut task_sections = Vec::new();
-        if task_events.is_empty() {
+        if task_records.is_empty() {
             continue;
         }
-        let first = task_events.first().unwrap();
+        let first = task_records.first().unwrap();
 
         if !first.ts.is_zero() {
             let extra_section_state = match &first.kind {
-                TaskEventKind::New => None,
-                TaskEventKind::PollStart => Some(TaskState::IdleScheduled),
-                TaskEventKind::PollEnd => Some(TaskState::Active),
-                TaskEventKind::Drop => Some(TaskState::Idle),
-                TaskEventKind::Wake => {
-                    if let Some(second) = task_events.get(1) {
-                        if let TaskEventKind::PollEnd = second.kind {
+                TaskRecordKind::New => None,
+                TaskRecordKind::PollStart => Some(TaskState::IdleScheduled),
+                TaskRecordKind::PollEnd => Some(TaskState::Active),
+                TaskRecordKind::Drop => Some(TaskState::Idle),
+                TaskRecordKind::Wake => {
+                    if let Some(second) = task_records.get(1) {
+                        if let TaskRecordKind::PollEnd = second.kind {
                             Some(TaskState::Active)
                         } else {
                             Some(TaskState::Idle)
@@ -599,10 +601,10 @@ pub(crate) fn collect_into_rows(
             }
         }
 
-        for curr_idx in 1..task_events.len() {
-            let current = &task_events[curr_idx];
-            let prev = &task_events[curr_idx - 1];
-            use TaskEventKind::{Drop, New, PollEnd, PollStart, Wake};
+        for curr_idx in 1..task_records.len() {
+            let current = &task_records[curr_idx];
+            let prev = &task_records[curr_idx - 1];
+            use TaskRecordKind::{Drop, New, PollEnd, PollStart, Wake};
 
             let section = match &current.kind {
                 New => Section::Invalid {
@@ -683,9 +685,9 @@ pub(crate) fn collect_into_rows(
         }
 
         println!("\n======== {task:?} ========");
-        println!("task_events: {task_events:?}");
-        println!("wake_events: {wake_events:?}");
-        println!("spawn_event: {spawn_event:?}");
+        println!("task_records: {task_records:?}");
+        println!("wake_records: {wake_records:?}");
+        println!("spawn_records: {spawn_record:?}");
         println!("task_sections: {task_sections:?}");
         println!("======== ======== ======== ========");
 
@@ -693,9 +695,9 @@ pub(crate) fn collect_into_rows(
             index,
             start_time,
             task,
-            spawn: spawn_event,
+            spawn: spawn_record,
             sections: task_sections,
-            wakings: wake_events,
+            wakings: wake_records,
         });
     }
 
@@ -711,8 +713,8 @@ enum Section {
     ExtendLast,
     Invalid {
         #[allow(dead_code)]
-        from: TaskEventKind,
+        from: TaskRecordKind,
         #[allow(dead_code)]
-        to: TaskEventKind,
+        to: TaskRecordKind,
     },
 }
