@@ -57,25 +57,25 @@ A record contains timing metadata and record data.
 
 Record data is a [tagged union] that contains objects and actions concerning those objects.
 
-| Variant        | Discriminant | Data                        |
-|----------------|--------------|-----------------------------|
-| End            | 0            |                             |
-| Callsite       | 1            | [Callsite]                  |
-| Span           | 2            | [Span]                      |
-| Event          | 3            | [Event]                     |
-| Task           | 4            | [Task]                      |
-| SpanNew        | 5            | `iid`: [InstrumentationId]  |
-| SpanEnter      | 6            | `iid`: [InstrumentationId]  |
-| SpanExit       | 7            | `iid`: [InstrumentationId]  |
-| SpanClose      | 8            | `iid`: [InstrumentationId]  |
-| TaskNew        | 9            | `iid`: [InstrumentationId]  |
-| TaskPollStart  | 10           | `iid`: [InstrumentationId]  |
-| TaskPollEnd    | 11           | `iid`: [InstrumentationId]  |
-| TaskDrop       | 12           | `iid`: [InstrumentationId]  |
-| WakerWake      | 13           | `waker`: [Waker]            |
-| WakerWakeByRef | 14           | `waker`: [Waker]            |
-| WakerClone     | 15           | `waker`: [Waker]            |
-| WakerDrop      | 16           | `waker`: [Waker]            |
+| Variant        | Discriminant | Data                       |
+|----------------|--------------|----------------------------|
+| End            | 0            |                            |
+| Callsite       | 1            | `callsite`: [Callsite]     |
+| Span           | 2            | `span`: [Span]             |
+| Event          | 3            | `event`: [Event]           |
+| Task           | 4            | `task`: [Task]             |
+| SpanNew        | 5            | `iid`: [InstrumentationId] |
+| SpanEnter      | 6            | `iid`: [InstrumentationId] |
+| SpanExit       | 7            | `iid`: [InstrumentationId] |
+| SpanClose      | 8            | `iid`: [InstrumentationId] |
+| TaskNew        | 9            | `iid`: [InstrumentationId] |
+| TaskPollStart  | 10           | `iid`: [InstrumentationId] |
+| TaskPollEnd    | 11           | `iid`: [InstrumentationId] |
+| TaskDrop       | 12           | `iid`: [InstrumentationId] |
+| WakerWake      | 13           | `waker`: [Waker]           |
+| WakerWakeByRef | 14           | `waker`: [Waker]           |
+| WakerClone     | 15           | `waker`: [Waker]           |
+| WakerDrop      | 16           | `waker`: [Waker]           |
 
 
 [Record]: #record

@@ -184,8 +184,16 @@ where
     }
 
     /// Push a callsite to be written during the next [`flush`].
-    pub fn push_callsite(&mut self, callsite: Callsite) {
+    ///
+    /// The list of existing callsites will be checked for duplicates
+    pub fn push_callsite(&mut self, callsite: Callsite) -> PushCallsiteResult {
+        for existing in &self.chunked_callsites.callsites {
+            if existing.callsite_id == callsite.callsite_id {
+                return PushCallsiteResult::Duplicate;
+            }
+        }
         self.chunked_callsites.callsites.push(callsite);
+        PushCallsiteResult::Added
     }
 
     /// Returns whether there are unwritten callsites that need to be flushed to the writer.
@@ -226,6 +234,16 @@ impl NewChunkedCallsitesWriterError {
     pub fn inner_error(&self) -> &postcard::Error {
         &self.inner
     }
+}
+
+/// Result of pushing a callsite
+#[derive(Debug)]
+pub enum PushCallsiteResult {
+    /// New callsite was added
+    Added,
+
+    /// A duplicate callsite (by `CallsiteId`) was found, the callsite wasn't pushed
+    Duplicate,
 }
 
 impl fmt::Display for NewChunkedCallsitesWriterError {

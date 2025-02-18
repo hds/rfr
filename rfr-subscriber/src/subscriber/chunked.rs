@@ -9,13 +9,13 @@ use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 use rfr::{
     chunked::{self, ChunkedWriter},
-    common,
+    common::{self, InstrumentationId},
     rec::{self, AbsTimestamp},
 };
 
 use crate::subscriber::common::{
-    get_context_task_id, CallsiteId, EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind,
-    TraceKind, WakerFields, WakerOp,
+    get_context_task_iid, to_callsite, to_callsite_id, to_iid, EventKind, SpanKind, SpawnFields,
+    SpawnSpan, TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
 };
 
 struct WriterHandle {
@@ -35,8 +35,8 @@ impl Flusher {
 
 pub struct RfrChunkedLayer {
     writer_handle: WriterHandle,
-    callsite_cache: Mutex<HashMap<CallsiteId, TraceKind>>,
-    object_cache: Mutex<HashMap<TaskId, chunked::Object>>,
+    callsite_cache: Mutex<HashMap<chunked::CallsiteId, (chunked::Callsite, TraceKind)>>,
+    object_cache: Mutex<HashMap<InstrumentationId, chunked::Object>>,
 }
 
 impl RfrChunkedLayer {
@@ -86,33 +86,32 @@ impl RfrChunkedLayer {
         }
     }
 
-    fn new_object(&self, task_id: TaskId, object: chunked::Object) {
+    fn new_object(&self, iid: InstrumentationId, object: chunked::Object) {
         let mut object_cache = self.object_cache.lock().expect("object cache poisoned");
-        object_cache.insert(task_id, object);
+        object_cache.insert(iid, object);
     }
 
-    fn drop_object(&self, task_id: &TaskId) {
+    fn drop_object(&self, iid: &InstrumentationId) {
         let mut object_cache = self.object_cache.lock().expect("object cache poisoned");
-        object_cache.remove(task_id);
+        object_cache.remove(iid);
     }
 
-    fn get_objects(&self, task_ids: &[common::TaskId]) -> Vec<Option<chunked::Object>> {
+    fn get_objects(&self, iids: &[InstrumentationId]) -> Vec<Option<chunked::Object>> {
         let object_cache = self.object_cache.lock().expect("object cache poisoned");
-        task_ids
-            .iter()
-            .map(|task_id| object_cache.get(&TaskId(task_id.as_u64())).cloned())
+        iids.iter()
+            .map(|iid| object_cache.get(iid).cloned())
             .collect()
     }
 
-    fn write_event(&self, timestamp: rec::AbsTimestamp, event: common::Event) {
+    fn write_record(&self, timestamp: rec::AbsTimestamp, data: chunked::RecordData) {
         self.writer_handle
             .writer
             .with_seq_chunk_buffer(timestamp.clone(), |current_buffer| {
-                let record = chunked::EventRecord {
+                let record = chunked::Record {
                     meta: chunked::Meta {
                         timestamp: current_buffer.chunk_timestamp(&timestamp),
                     },
-                    event,
+                    data,
                 };
                 current_buffer.append_record(record, |task_ids| self.get_objects(task_ids));
             });
@@ -140,12 +139,18 @@ where
     fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
         match TraceKind::try_from(metadata) {
             Ok(kind) => {
-                let callsite = CallsiteId::from(metadata);
+                let callsite_id = to_callsite_id(metadata);
                 let mut callsite_cache = self
                     .callsite_cache
                     .lock()
                     .expect("callsite cache is poisoned");
-                callsite_cache.entry(callsite).or_insert(kind);
+                callsite_cache.entry(callsite_id).or_insert_with(|| {
+                    let new_callsite = to_callsite(metadata);
+                    self.writer_handle
+                        .writer
+                        .register_callsite(new_callsite.clone());
+                    (new_callsite, kind)
+                });
 
                 Interest::always()
             }
@@ -155,13 +160,13 @@ where
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
         let timestamp = AbsTimestamp::now();
-        let callsite = CallsiteId::from(attrs.metadata());
+        let callsite_id = to_callsite_id(attrs.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
-            let Some(kind) = callsite_cache.get(&callsite).cloned() else {
+            let Some(callsite_kind) = callsite_cache.get(&callsite_id) else {
                 return;
             };
-            kind
+            callsite_kind.1.clone()
         };
         match kind {
             TraceKind::Span(SpanKind::Spawn) => {
@@ -170,9 +175,9 @@ where
                 if !fields.is_valid() {
                     return;
                 }
-                let context = get_context_task_id(&ctx);
+                let context = get_context_task_iid(&ctx);
 
-                let spawn = SpawnSpan::new(callsite, id.clone(), context, fields);
+                let spawn = SpawnSpan::new(callsite_id, id.clone(), context, fields);
 
                 let span = ctx
                     .span(id)
@@ -183,7 +188,9 @@ where
                 }
                 {
                     let task_id = common::TaskId::from(spawn.task_id.0);
-                    let task_event = chunked::Object::Task(common::Task {
+                    let task = chunked::Object::Task(common::Task {
+                        iid: spawn.iid,
+                        callsite_id: spawn.callsite_id,
                         task_id,
                         task_name: spawn.task_name,
                         task_kind: match spawn.task_kind {
@@ -194,11 +201,11 @@ where
                             TaskKind::Other(val) => common::TaskKind::Other(val),
                         },
 
-                        context: spawn.context.map(|task_id| common::TaskId::from(task_id.0)),
+                        context: spawn.context,
                     });
-                    self.new_object(spawn.task_id, task_event);
-                    let new_event = common::Event::NewTask { id: task_id };
-                    self.write_event(timestamp, new_event);
+                    self.new_object(spawn.iid, task);
+                    let rec_data = chunked::RecordData::TaskNew { iid: spawn.iid };
+                    self.write_record(timestamp, rec_data);
                 }
             }
             _ => {
@@ -209,13 +216,13 @@ where
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let timestamp = AbsTimestamp::now();
-        let callsite = CallsiteId::from(event.metadata());
+        let callsite = to_callsite_id(event.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
-            let Some(kind) = callsite_cache.get(&callsite).cloned() else {
+            let Some(callsite_kind) = callsite_cache.get(&callsite) else {
                 return;
             };
-            kind
+            callsite_kind.1.clone()
         };
         match kind {
             TraceKind::Event(EventKind::Waker) => {
@@ -226,29 +233,20 @@ where
                 }
                 let op = fields.op.unwrap();
                 let task_span_id = fields.task_span_id.unwrap();
-                let Some(task_id) = ctx
-                    .span(&task_span_id)
-                    .and_then(|span| span.extensions().get::<TaskId>().cloned())
-                else {
-                    // We can't find the task id for the task we're supposed to be waking.
-                    return;
-                };
-                let context = get_context_task_id(&ctx);
 
-                //let waker = WakerEvent::new(op, task_id, context, callsite);
                 {
                     let waker = common::Waker {
-                        task_id: common::TaskId::from(task_id.0),
-                        context: context.map(|task_id| common::TaskId::from(task_id.0)),
+                        task_iid: to_iid(&task_span_id),
+                        context: ctx.current_span().id().map(to_iid),
                     };
-                    let waker_event = match op {
-                        WakerOp::Wake => common::Event::WakerWake { waker },
-                        WakerOp::WakeByRef => common::Event::WakerWakeByRef { waker },
-                        WakerOp::Clone => common::Event::WakerClone { waker },
-                        WakerOp::Drop => common::Event::WakerDrop { waker },
+                    let waker_data = match op {
+                        WakerOp::Wake => chunked::RecordData::WakerWake { waker },
+                        WakerOp::WakeByRef => chunked::RecordData::WakerWakeByRef { waker },
+                        WakerOp::Clone => chunked::RecordData::WakerClone { waker },
+                        WakerOp::Drop => chunked::RecordData::WakerDrop { waker },
                     };
 
-                    self.write_event(timestamp, waker_event);
+                    self.write_record(timestamp, waker_data);
                 }
             }
             _ => {
@@ -261,14 +259,10 @@ where
         let timestamp = AbsTimestamp::now();
         let span = ctx.span(id).expect("enter {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let task_id = common::TaskId::from(task_id.0);
-                let poll_start = common::Event::TaskPollStart { id: task_id };
-
-                self.write_event(timestamp, poll_start);
-            }
+            let poll_start = chunked::RecordData::TaskPollStart { iid: to_iid(id) };
+            self.write_record(timestamp, poll_start);
         }
     }
 
@@ -276,14 +270,10 @@ where
         let timestamp = AbsTimestamp::now();
         let span = ctx.span(id).expect("exit {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let task_id = common::TaskId::from(task_id.0);
-                let poll_end = common::Event::TaskPollEnd { id: task_id };
-
-                self.write_event(timestamp, poll_end);
-            }
+            let poll_end = chunked::RecordData::TaskPollEnd { iid: to_iid(id) };
+            self.write_record(timestamp, poll_end);
         }
     }
 
@@ -293,16 +283,13 @@ where
             .span(&id)
             .expect("close {id:?} not found, this is a bug");
         let extensions = span.extensions();
-        if let Some(task_id) = extensions.get::<TaskId>() {
+        if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
-            {
-                let task_drop = common::Event::TaskDrop {
-                    id: common::TaskId::from(task_id.0),
-                };
+            let iid = to_iid(&id);
+            let task_drop = chunked::RecordData::TaskDrop { iid };
 
-                self.write_event(timestamp, task_drop);
-                self.drop_object(task_id);
-            }
+            self.write_record(timestamp, task_drop);
+            self.drop_object(&iid);
         }
     }
 }

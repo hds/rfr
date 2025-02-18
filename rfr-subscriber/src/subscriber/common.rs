@@ -1,8 +1,12 @@
 use std::{error, fmt, ptr};
 
+use rfr::{
+    chunked::{Callsite, CallsiteId},
+    common::{Field, FieldName, FieldValue, InstrumentationId},
+};
 use tracing::{
-    field::{Field, Visit},
-    span, Metadata, Subscriber,
+    field::{self, Visit},
+    span, Level, Metadata, Subscriber,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
@@ -89,22 +93,73 @@ impl fmt::Display for TryFromMetadataError {
 }
 impl error::Error for TryFromMetadataError {}
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(super) struct CallsiteId(u64);
+pub(super) fn to_callsite(metadata: &Metadata<'_>) -> Callsite {
+    let mut const_fields = vec![
+        Field {
+            name: FieldName("name".into()),
+            value: FieldValue::Str(metadata.name().to_string()),
+        },
+        Field {
+            name: FieldName("target".into()),
+            value: FieldValue::Str(metadata.name().to_string()),
+        },
+    ];
+    if let Some(module_path) = metadata.module_path() {
+        const_fields.push(Field {
+            name: FieldName("module_path".into()),
+            value: FieldValue::Str(module_path.to_string()),
+        });
+    }
+    if let Some(module_pathfile) = metadata.file() {
+        const_fields.push(Field {
+            name: FieldName("file".into()),
+            value: FieldValue::Str(module_pathfile.to_string()),
+        });
+    }
+    if let Some(line) = metadata.line() {
+        const_fields.push(Field {
+            name: FieldName("line".into()),
+            value: FieldValue::U64(line as u64),
+        });
+    }
 
-impl From<&Metadata<'_>> for CallsiteId {
-    fn from(metadata: &Metadata<'_>) -> Self {
-        Self(ptr::from_ref(metadata) as u64)
+    let mut split_field_names = Vec::new();
+    for field in metadata.fields() {
+        split_field_names.push(FieldName(field.name().into()));
+    }
+    Callsite {
+        callsite_id: to_callsite_id(metadata),
+        level: rfr::common::Level(match *metadata.level() {
+            Level::ERROR => 50,
+            Level::WARN => 40,
+            Level::INFO => 30,
+            Level::DEBUG => 20,
+            Level::TRACE => 10,
+        }),
+        kind: if metadata.is_span() {
+            rfr::common::Kind::Span
+        } else {
+            rfr::common::Kind::Event
+        },
+        const_fields,
+        split_field_names,
     }
 }
 
-pub(crate) fn get_context_task_id<S>(ctx: &Context<'_, S>) -> Option<TaskId>
+pub(super) fn to_callsite_id(metadata: &Metadata<'_>) -> CallsiteId {
+    CallsiteId::from(ptr::from_ref(metadata) as u64)
+}
+
+pub(super) fn to_iid(span_id: &span::Id) -> InstrumentationId {
+    InstrumentationId::from(span_id.into_u64())
+}
+
+pub(crate) fn get_context_task_iid<S>(ctx: &Context<'_, S>) -> Option<InstrumentationId>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     let current_span = &ctx.current_span();
-    let span_id = current_span.id()?;
-    ctx.span(span_id)?.extensions().get().cloned()
+    Some(to_iid(current_span.id()?))
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -116,19 +171,17 @@ pub(crate) struct SpawnSpan {
     pub(crate) task_name: String,
     pub(crate) task_kind: TaskKind,
 
-    pub(crate) context: Option<TaskId>,
+    pub(crate) context: Option<InstrumentationId>,
 
-    #[allow(unused)]
-    callsite: CallsiteId,
-    #[allow(unused)]
-    span: span::Id,
+    pub(crate) callsite_id: CallsiteId,
+    pub(crate) iid: InstrumentationId,
 }
 
 impl SpawnSpan {
     pub(crate) fn new(
-        callsite: CallsiteId,
+        callsite_id: CallsiteId,
         span_id: span::Id,
-        context: Option<TaskId>,
+        context: Option<InstrumentationId>,
         fields: SpawnFields,
     ) -> Self {
         debug_assert!(fields.is_valid(), "invalid fields passed to SpawnSpan::new");
@@ -139,8 +192,8 @@ impl SpawnSpan {
 
             context,
 
-            callsite,
-            span: span_id,
+            callsite_id,
+            iid: to_iid(&span_id),
         }
     }
 }
@@ -184,7 +237,7 @@ impl SpawnFields {
 }
 
 impl Visit for SpawnFields {
-    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+    fn record_debug(&mut self, field: &field::Field, value: &dyn fmt::Debug) {
         match field.name() {
             Self::TASK_NAME => self.task_name = Some(format!("{value:?}")),
             Self::KIND => self.task_kind = Some(format!("{value:?}").into()),
@@ -192,7 +245,7 @@ impl Visit for SpawnFields {
         }
     }
 
-    fn record_u64(&mut self, field: &Field, value: u64) {
+    fn record_u64(&mut self, field: &field::Field, value: u64) {
         if field.name() == Self::TASK_ID {
             self.task_id = Some(TaskId(value));
         }
@@ -232,35 +285,6 @@ impl fmt::Display for InvalidWakerOpError<'_> {
 }
 impl error::Error for InvalidWakerOpError<'_> {}
 
-#[derive(Debug)]
-pub(crate) struct WakerEvent {
-    pub(crate) op: WakerOp,
-    pub(crate) task_id: TaskId,
-
-    pub(crate) context: Option<TaskId>,
-
-    #[allow(unused)]
-    callsite: CallsiteId,
-}
-
-impl WakerEvent {
-    pub(crate) fn new(
-        op: WakerOp,
-        task_id: TaskId,
-        context: Option<TaskId>,
-        callsite: CallsiteId,
-    ) -> Self {
-        Self {
-            op,
-            task_id,
-
-            context,
-
-            callsite,
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct WakerFields {
     pub(crate) op: Option<WakerOp>,
@@ -279,15 +303,15 @@ impl WakerFields {
 }
 
 impl Visit for WakerFields {
-    fn record_debug(&mut self, _field: &Field, _value: &dyn fmt::Debug) {}
+    fn record_debug(&mut self, _field: &field::Field, _value: &dyn fmt::Debug) {}
 
-    fn record_u64(&mut self, field: &Field, value: u64) {
+    fn record_u64(&mut self, field: &field::Field, value: u64) {
         if field.name() == Self::TASK_ID {
             self.task_span_id = Some(span::Id::from_u64(value));
         }
     }
 
-    fn record_str(&mut self, field: &Field, value: &str) {
+    fn record_str(&mut self, field: &field::Field, value: &str) {
         if field.name() == Self::OP {
             self.op = value.try_into().ok();
         }
