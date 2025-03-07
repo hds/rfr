@@ -5,5 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+eframe = { version = "0.31", features = ["default"] }
+egui_extras = { version = "0.31" }
 
 rfr = { version = "0.0.1", path = "../rfr" }

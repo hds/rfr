@@ -336,6 +336,13 @@ pub(crate) struct TaskRow {
     pub(crate) wakings: Vec<WakeRecord>,
 }
 
+impl TaskRow {
+    pub(crate) fn total_duration(&self) -> f32 {
+        let total_duration: u64 = self.sections.iter().map(|s| s.duration).sum();
+        total_duration as f32
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TaskSection {
     pub(crate) duration: u64,
@@ -346,7 +353,7 @@ pub(crate) struct TaskSection {
 pub(crate) enum TaskState {
     Active,
     Idle,
-    ActiveSchedueld,
+    ActiveScheduled,
     IdleScheduled,
 }
 
@@ -358,7 +365,7 @@ impl fmt::Display for TaskState {
             match self {
                 Self::Active => "active",
                 Self::Idle => "idle",
-                Self::ActiveSchedueld => "active",
+                Self::ActiveScheduled => "active",
                 Self::IdleScheduled => "scheduled",
             }
         )
@@ -621,7 +628,7 @@ pub(crate) fn collect_into_rows(
                 },
                 PollEnd => match &prev.kind {
                     PollStart => Section::New(TaskState::Active),
-                    Wake => Section::New(TaskState::ActiveSchedueld),
+                    Wake => Section::New(TaskState::ActiveScheduled),
                     New | PollEnd | Drop => Section::Invalid {
                         from: prev.kind.clone(),
                         to: current.kind.clone(),
