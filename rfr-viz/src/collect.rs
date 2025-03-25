@@ -51,7 +51,7 @@ impl TaskTimeHandle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct TaskTimestamp {
     micros: u64,
 }

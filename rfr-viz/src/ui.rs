@@ -1,11 +1,12 @@
-use std::fs;
+use std::{collections::HashMap, fs};
 
 use eframe::{egui, epaint};
 use egui_extras::StripBuilder;
 use rfr::common::TaskKind;
 
 use crate::collect::{
-    chunked_recording_info, streaming_recording_info, RecordingInfo, TaskRow, TaskState,
+    chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnRecordKind, TaskRow,
+    TaskState,
 };
 
 pub(crate) fn start_ui(recording_file: String) -> eframe::Result {
@@ -67,6 +68,11 @@ impl RfrViz {
         let task_rows = &self.info.task_rows;
         let spacing = ui.spacing_mut();
         spacing.item_spacing = egui::vec2(0.0, 0.0);
+        let mut tasks = HashMap::new();
+
+        for row in task_rows {
+            tasks.insert(row.task.iid, row.index);
+        }
 
         ui.horizontal(|ui| {
             StripBuilder::new(ui)
@@ -97,12 +103,17 @@ impl RfrViz {
                             let scroll_x = ui.input(|input| input.smooth_scroll_delta.x);
                             if scroll_x != 0. {
                                 let max = self.info.end_time.as_micros() as f32 - rect.width();
-                                self.state.start_micros = (self.state.start_micros - scroll_x).clamp(0., max);
+                                self.state.start_micros =
+                                    (self.state.start_micros - scroll_x).clamp(0., max);
                             }
 
                             ui.shrink_clip_rect(rect);
                             for row in task_rows {
                                 task_row(ui, self.state.start_micros, row);
+                            }
+
+                            for row in task_rows {
+                                spawn_line(ui, cursor, self.state.start_micros, row);
                             }
                         });
                     });
@@ -112,11 +123,10 @@ impl RfrViz {
 }
 
 static TASK_ROW_HEIGHT: f32 = 42.;
+static SECTION_HEIGHT: f32 = 20.;
+static SECTION_OFFSET: f32 = (TASK_ROW_HEIGHT - SECTION_HEIGHT) / 2.;
 
 fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::Response {
-    static SECTION_HEIGHT: f32 = 20.;
-    static SECTION_OFFSET: f32 = (TASK_ROW_HEIGHT - SECTION_HEIGHT) / 2.;
-
     let total_width = task_row.start_time.micros as f32 + task_row.total_duration();
     let desired_size = egui::vec2(total_width, 42.0);
     let (rect, response) =
@@ -125,19 +135,6 @@ fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::R
     let mut x = task_row.start_time.as_micros() as f32 - start_micros;
     let radius = 0.;
     if ui.is_rect_visible(rect) {
-        let mut rrect = rect;
-        rrect.min.x += x;
-        rrect.max.x = rrect.min.x + 5.;
-        rrect.min.y += 8.;
-        rrect.max.y += 20.;
-        ui.painter().rect(
-            rrect,
-            radius,
-            egui::Color32::RED,
-            egui::Stroke::new(0., egui::Color32::RED),
-            egui::StrokeKind::Inside,
-        );
-        //println!("- task:");
         for section in &task_row.sections {
             let min_x = rect.min.x + x;
             let sec_rect = egui::Rect {
@@ -259,3 +256,116 @@ fn task_label(ui: &mut egui::Ui, task_row: &TaskRow) -> egui::Response {
 
     response
 }
+fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &TaskRow) {
+    let row_idx = row.index.as_inner();
+    if let Some(spawn) = &row.spawn {
+        let spawn_x = cursor.x
+            + (row.start_time.clone() + spawn.ts).as_micros() as f32
+            - start_micros;
+        let spawn_stroke: egui::Stroke = egui::Stroke {
+            width: 1.,
+            color: egui::Color32::from_rgb(0x09, 0xe3, 0x64),
+        };
+
+        let row_y = cursor.y + (TASK_ROW_HEIGHT * row_idx as f32);
+        let (start_y, end_y, start_arrow_points) = match &spawn.kind {
+            SpawnRecordKind::Spawn { by: Some(by_idx) }
+                if by_idx != &row.index =>
+            {
+                let start_y = cursor.y
+                    + (TASK_ROW_HEIGHT * by_idx.as_inner() as f32)
+                    + (TASK_ROW_HEIGHT / 2.);
+                let end_row_offset = if by_idx > &row.index {
+                    TASK_ROW_HEIGHT - SECTION_OFFSET
+                } else {
+                    SECTION_OFFSET
+                };
+
+                let end_y = row_y + end_row_offset;
+
+                let half_width = 6.;
+                let half_height = 5.;
+                let start_arrow_points = if by_idx > &row.index {
+                    vec![
+                        egui::pos2(spawn_x, start_y - half_height),
+                        egui::pos2(spawn_x - half_width, start_y + half_height),
+                        egui::pos2(spawn_x + half_width, start_y + half_height),
+                    ]
+                } else {
+                    vec![
+                        egui::pos2(spawn_x, start_y + half_height),
+                        egui::pos2(spawn_x - half_width, start_y - half_height),
+                        egui::pos2(spawn_x + half_width, start_y - half_height),
+                    ]
+                };
+
+                (start_y, end_y, Some(start_arrow_points))
+            }
+            _ => {
+                let start_y = row_y + SECTION_OFFSET;
+                let end_y = row_y + TASK_ROW_HEIGHT - SECTION_OFFSET;
+                (start_y, end_y, None)
+            }
+        };
+
+        //let y = cursor.y + (TASK_ROW_HEIGHT * idx as f32);
+        ui.painter().line(
+            vec![
+                epaint::pos2(spawn_x, start_y),
+                epaint::pos2(spawn_x, end_y),
+            ],
+            spawn_stroke,
+        );
+
+        let rect = egui::Rect {
+            min: egui::pos2(
+                spawn_x,
+                row_y + TASK_ROW_HEIGHT - SECTION_OFFSET - 7.,
+            ),
+            max: egui::pos2(
+                spawn_x + 34.,
+                row_y + TASK_ROW_HEIGHT - SECTION_OFFSET + 8.,
+            ),
+        };
+        let arrow = epaint::PathShape {
+            points: vec![
+                egui::pos2(spawn_x, rect.min.y),
+                egui::pos2(spawn_x, rect.max.y),
+                egui::pos2(
+                    spawn_x + 8.,
+                    rect.min.y + rect.height() / 2.,
+                ),
+            ],
+            closed: true,
+            fill: spawn_stroke.color,
+            stroke: epaint::PathStroke::NONE,
+        };
+        ui.painter().rect(
+            rect,
+            0.,
+            egui::Color32::from_rgb(0x30, 0xba, 0x69),
+            spawn_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let spawn_label = egui::Label::new(
+            egui::RichText::new("S")
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .halign(egui::Align::Center);
+        ui.put(rect, spawn_label);
+        ui.painter().add(arrow);
+        if let Some(points) = start_arrow_points {
+            let start_arrow = epaint::PathShape {
+                points,
+                closed: true,
+                fill: spawn_stroke.color,
+                stroke: epaint::PathStroke::NONE,
+            };
+            ui.painter().add(start_arrow);
+
+        }
+    }
+}
+
