@@ -1,3 +1,4 @@
 [workspace]
 members = ["rfr", "rfr-subscriber", "rfr-viz"]
 resolver = "2"
+rust-version = "1.84"

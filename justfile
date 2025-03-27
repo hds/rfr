@@ -4,27 +4,27 @@ create-examples-output:
 [working-directory: 'examples-output']
 spawn-streamed: create-examples-output
     cargo run -p rfr-subscriber --example spawn
-    cargo run -p rfr-viz -- recording-spawn-stream.rfr --name spawn-stream
+    cargo run -p rfr-viz -- generate recording-spawn-stream.rfr --name spawn-stream
 
 [working-directory: 'examples-output']
 ping-pong-streamed: create-examples-output
     cargo run -p rfr-subscriber --example ping-pong
-    cargo run -p rfr-viz -- recording-ping_pong-stream.rfr --name ping-pong-stream
+    cargo run -p rfr-viz -- generate recording-ping_pong-stream.rfr --name ping-pong-stream
 
 [working-directory: 'examples-output']
 spawn-chunked: create-examples-output
     cargo run -p rfr-subscriber --example spawn-chunked
-    cargo run -p rfr-viz -- chunked-spawn.rfr --name spawn-chunked
+    cargo run -p rfr-viz -- generate chunked-spawn.rfr --name spawn-chunked
 
 [working-directory: 'examples-output']
 ping-pong-chunked: create-examples-output
     cargo run -p rfr-subscriber --example ping-pong-chunked
-    cargo run -p rfr-viz -- chunked-ping-pong.rfr --name ping-pong-chunked
+    cargo run -p rfr-viz -- generate chunked-ping-pong.rfr --name ping-pong-chunked
 
 [working-directory: 'examples-output']
 barrier-chunked: create-examples-output
     cargo run -p rfr-subscriber --example barrier
-    cargo run -p rfr-viz -- chunked-barrier.rfr --name barrier
+    cargo run -p rfr-viz -- generate chunked-barrier.rfr --name barrier
 
 all-examples: spawn-streamed ping-pong-streamed spawn-chunked ping-pong-chunked barrier-chunked
 
