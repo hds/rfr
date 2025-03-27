@@ -78,11 +78,8 @@ impl RfrViz {
             StripBuilder::new(ui)
                 .size(egui_extras::Size::exact(100.))
                 .size(egui_extras::Size::remainder())
-                //.size(egui_extras::Size::exact(width))
                 .horizontal(|mut strip| {
                     strip.cell(|ui| {
-                        //          println!("label cell: ...");
-                        //self.task_label(ui, row);
                         ui.vertical(|ui| {
                             for row in task_rows {
                                 task_label(ui, row);
@@ -145,20 +142,17 @@ fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::R
                     rect.min.y + SECTION_OFFSET + SECTION_HEIGHT,
                 ),
             };
-            //            let mut draw_rect = rect;
-            //            draw_rect.min.x += x;
-            //            draw_rect.max.x = draw_rect.min.x + section.duration as f32;
-            //            draw_rect.min.y += 8.;
-            //            draw_rect.max.y -= 8.;
             x += section.duration as f32;
-            //println!("  - rect: {rect:?}, draw_rect: {sec_rect:?}");
 
             let fill_color = match section.state {
                 TaskState::Active | TaskState::ActiveScheduled => {
                     egui::Color32::from_rgb(0x48, 0x9E, 0x6C)
                 }
-                TaskState::Idle | TaskState::IdleScheduled => {
+                TaskState::Idle => {
                     egui::Color32::from_rgb(0x90, 0xe8, 0xa8)
+                }
+                TaskState::IdleScheduled => {
+                    egui::Color32::from_rgb(0xd6, 0xe8, 0x90)
                 }
             };
             let stroke = egui::Stroke::new(1.0, fill_color);
@@ -204,16 +198,13 @@ fn task_label(ui: &mut egui::Ui, task_row: &TaskRow) -> egui::Response {
         );
         layout_job.wrap.max_width = desired_size.x;
         layout_job.wrap.max_rows = 1;
-        //println!(" --> {layout_job:?}");
         let galley = ui.fonts(|fonts| fonts.layout_job(layout_job));
-        //println!("   --> {}", fonts_height);
         // TODO(hds): create some actually correct positioning.
         let text_shape = epaint::TextShape::new(
             rect.left_top() + egui::vec2(0., 4.),
             galley,
             visuals.text_color(),
         );
-        //println!("   --> {:?}", text_shape.visual_bounding_rect().size());
         ui.painter().add(text_shape);
 
         let task_id = format!("Task Id: {}", task_row.task.task_id.as_u64());
@@ -243,15 +234,12 @@ fn task_label(ui: &mut egui::Ui, task_row: &TaskRow) -> egui::Response {
                 ),
             },
         ];
-        //println!(" --> {layout_job:?}");
         let galley = ui.fonts(|fonts| fonts.layout_job(layout_job));
-        //println!("   --> {}", fonts_height);
         let text_shape = epaint::TextShape::new(
             rect.left_top() + egui::vec2(0., 18.),
             galley,
             visuals.text_color(),
         );
-        //println!("   --> {:?}", text_shape.visual_bounding_rect().size());
         ui.painter().add(text_shape);
     }
 
