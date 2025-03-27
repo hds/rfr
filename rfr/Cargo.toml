@@ -2,6 +2,7 @@
 name = "rfr"
 version = "0.0.1"
 license = "MIT"
+rust-version = "1.84"
 edition = "2021"
 authors = ["Hayden Stainsby <hds@caffeineconcepts.com>"]
 readme = "README.md"

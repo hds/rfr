@@ -4,7 +4,7 @@ create-examples-output:
 [working-directory: 'examples-output']
 spawn-streamed: create-examples-output
     cargo run -p rfr-subscriber --example spawn
-    cargo run -p rfr-viz -- recording-spawn-stream.rfr --name spawn-stream
+    cargo run -p rfr-viz -- generate recording-spawn-stream.rfr --name spawn-stream
 
 [working-directory: 'examples-output']
 ping-pong-streamed: create-examples-output

@@ -509,7 +509,7 @@ pub(crate) fn collect_into_rows(
                 RecordData::TaskNew { .. } => {
                     debug_assert!(spawn_record.is_none(), "multiple NewTask records");
                     spawn_record = Some(SpawnRecord {
-                        ts: ts.clone(),
+                        ts,
                         kind: SpawnRecordKind::Spawn {
                             by: get_index(task.context),
                         },
@@ -533,7 +533,7 @@ pub(crate) fn collect_into_rows(
                 }),
                 RecordData::WakerWake { waker } => {
                     task_records.push(TaskRecord {
-                        ts: ts.clone(),
+                        ts,
                         kind: TaskRecordKind::Wake,
                     });
 
@@ -549,7 +549,7 @@ pub(crate) fn collect_into_rows(
                 }
                 RecordData::WakerWakeByRef { waker } => {
                     task_records.push(TaskRecord {
-                        ts: ts.clone(),
+                        ts,
                         kind: TaskRecordKind::Wake,
                     });
 

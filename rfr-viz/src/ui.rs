@@ -148,12 +148,8 @@ fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::R
                 TaskState::Active | TaskState::ActiveScheduled => {
                     egui::Color32::from_rgb(0x48, 0x9E, 0x6C)
                 }
-                TaskState::Idle => {
-                    egui::Color32::from_rgb(0x90, 0xe8, 0xa8)
-                }
-                TaskState::IdleScheduled => {
-                    egui::Color32::from_rgb(0xd6, 0xe8, 0x90)
-                }
+                TaskState::Idle => egui::Color32::from_rgb(0x90, 0xe8, 0xa8),
+                TaskState::IdleScheduled => egui::Color32::from_rgb(0xd6, 0xe8, 0x90),
             };
             let stroke = egui::Stroke::new(1.0, fill_color);
             ui.painter().rect(
@@ -248,8 +244,7 @@ fn task_label(ui: &mut egui::Ui, task_row: &TaskRow) -> egui::Response {
 fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &TaskRow) {
     let Some(spawn) = &row.spawn else { return };
 
-    let spawn_x =
-        cursor.x + (row.start_time.clone() + spawn.ts).as_micros() as f32 - start_micros;
+    let spawn_x = cursor.x + (row.start_time.clone() + spawn.ts).as_micros() as f32 - start_micros;
     let spawn_stroke: egui::Stroke = egui::Stroke {
         width: 1.,
         color: egui::Color32::from_rgb(0x09, 0xe3, 0x64),
@@ -268,18 +263,20 @@ fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &Ta
         stroke: spawn_stroke,
         label_text: "S".into(),
     };
-    link_line(
-        ui,
-        cursor,
-        line,
-    );
+    link_line(ui, cursor, line);
 }
 
 fn waker_lines(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &TaskRow) {
     for waking in &row.wakings {
-        let wake_x = cursor.x + (row.start_time.clone() + waking.ts).as_micros() as f32 - start_micros;
+        let wake_x =
+            cursor.x + (row.start_time.clone() + waking.ts).as_micros() as f32 - start_micros;
         let from_idx = match &waking.kind {
-            WakeRecordKind::Wake { by: Some(by_idx) } | WakeRecordKind::WakeByRef { by: Some(by_idx) } if by_idx != &row.index => Some(*by_idx),
+            WakeRecordKind::Wake { by: Some(by_idx) }
+            | WakeRecordKind::WakeByRef { by: Some(by_idx) }
+                if by_idx != &row.index =>
+            {
+                Some(*by_idx)
+            }
             _ => None,
         };
         let stroke = egui::Stroke {
@@ -296,11 +293,7 @@ fn waker_lines(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &T
             stroke,
             label_text: waking.kind.to_string(),
         };
-        link_line(
-            ui,
-            cursor,
-            line,
-        );
+        link_line(ui, cursor, line);
     }
 }
 
@@ -313,11 +306,7 @@ struct LinkLine {
     label_text: String,
 }
 
-fn link_line(
-    ui: &mut egui::Ui,
-    cursor: egui::Pos2,
-    line: LinkLine,
-) {
+fn link_line(ui: &mut egui::Ui, cursor: egui::Pos2, line: LinkLine) {
     let row_y = cursor.y + (TASK_ROW_HEIGHT * line.task_idx.as_inner() as f32);
     let (start_y, end_y, start_arrow_points) = match line.from_idx {
         Some(from_idx) if from_idx != line.task_idx => {
@@ -357,13 +346,19 @@ fn link_line(
     };
 
     ui.painter().line(
-        vec![epaint::pos2(line.line_x, start_y), epaint::pos2(line.line_x, end_y)],
+        vec![
+            epaint::pos2(line.line_x, start_y),
+            epaint::pos2(line.line_x, end_y),
+        ],
         line.stroke,
     );
 
     let rect = egui::Rect {
         min: egui::pos2(line.line_x, row_y + TASK_ROW_HEIGHT - SECTION_OFFSET - 7.),
-        max: egui::pos2(line.line_x + 34., row_y + TASK_ROW_HEIGHT - SECTION_OFFSET + 8.),
+        max: egui::pos2(
+            line.line_x + 34.,
+            row_y + TASK_ROW_HEIGHT - SECTION_OFFSET + 8.,
+        ),
     };
     let arrow = epaint::PathShape {
         points: vec![
