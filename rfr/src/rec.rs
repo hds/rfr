@@ -86,6 +86,10 @@ impl WinTimestamp {
     pub fn as_micros(&self) -> u64 {
         self.micros
     }
+
+    pub fn as_nanos(&self) -> u64 {
+        self.micros * 1_000
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
