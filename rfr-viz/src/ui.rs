@@ -9,6 +9,10 @@ use crate::collect::{
     TaskRow, TaskState, WakeRecordKind,
 };
 
+static TASK_ROW_HEIGHT: f32 = 42.;
+static SECTION_HEIGHT: f32 = 20.;
+static SECTION_OFFSET: f32 = (TASK_ROW_HEIGHT - SECTION_HEIGHT) / 2.;
+
 pub(crate) fn start_ui(recording_file: String) -> eframe::Result {
     let recording_file_type = fs::metadata(recording_file.clone()).unwrap().file_type();
     let info = if recording_file_type.is_file() {
@@ -34,9 +38,41 @@ pub(crate) fn start_ui(recording_file: String) -> eframe::Result {
     )
 }
 
+#[derive(Debug)]
+struct Zoom {
+    nanos_per_pixel: u64,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            nanos_per_pixel: 1_000,
+        }
+    }
+}
+
+impl Zoom {
+    fn nanos_per_pixel(&self) -> f32 {
+        self.nanos_per_pixel as f32
+    }
+
+    fn zoom_in(&mut self) {
+        if self.nanos_per_pixel > 2 {
+            self.nanos_per_pixel /= 2;
+        } else {
+            self.nanos_per_pixel = 1;
+        }
+    }
+
+    fn zoom_out(&mut self) {
+        self.nanos_per_pixel *= 2;
+    }
+}
+
 #[derive(Debug, Default)]
 struct State {
-    start_micros: f32,
+    start_nanos: f32,
+    zoom: Zoom,
 }
 
 struct RfrViz {
@@ -55,10 +91,15 @@ impl RfrViz {
 
 impl eframe::App for RfrViz {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)) {
+            self.state.zoom.zoom_in();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Minus)) {
+            self.state.zoom.zoom_out();
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.task_rows(ui);
-            });
+            self.task_rows(ui);
         });
     }
 }
@@ -74,75 +115,206 @@ impl RfrViz {
             tasks.insert(row.task.iid, row.index);
         }
 
-        ui.horizontal(|ui| {
-            StripBuilder::new(ui)
-                .size(egui_extras::Size::exact(100.))
-                .size(egui_extras::Size::remainder())
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| {
-                        ui.vertical(|ui| {
-                            for row in task_rows {
-                                task_label(ui, row);
-                            }
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                time_bar(ui, &self.state);
+            });
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                StripBuilder::new(ui)
+                    .size(egui_extras::Size::exact(100.))
+                    .size(egui_extras::Size::remainder())
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            ui.vertical(|ui| {
+                                for row in task_rows {
+                                    task_label(ui, row);
+                                }
+                            });
+                        });
+                        strip.cell(|ui| {
+                            ui.vertical(|ui| {
+                                let available_size = ui.available_size();
+                                let cursor = ui.cursor().min;
+                                let mut rect = egui::Rect {
+                                    min: cursor,
+                                    max: cursor + available_size,
+                                };
+                                let clip_rect = ui.clip_rect();
+                                rect.max.y = clip_rect.max.y;
+
+                                let scroll_x = ui.input(|input| input.smooth_scroll_delta.x);
+                                if scroll_x != 0. {
+                                    let max = self.info.end_time.as_nanos() as f32
+                                        - (self.state.zoom.nanos_per_pixel() * rect.width());
+                                    let delta = scroll_x * self.state.zoom.nanos_per_pixel();
+                                    self.state.start_nanos =
+                                        (self.state.start_nanos - delta).clamp(0., max.max(0.));
+                                }
+
+                                ui.shrink_clip_rect(rect);
+                                for row in task_rows {
+                                    task_row(ui, &self.state, row);
+                                }
+
+                                for row in task_rows {
+                                    spawn_line(ui, cursor, &self.state, row);
+                                    waker_lines(ui, cursor, &self.state, row);
+                                }
+                            });
                         });
                     });
-                    strip.cell(|ui| {
-                        ui.vertical(|ui| {
-                            let available_size = ui.available_size();
-                            let cursor = ui.cursor().min;
-                            let mut rect = egui::Rect {
-                                min: cursor,
-                                max: cursor + available_size,
-                            };
-                            let clip_rect = ui.clip_rect();
-                            rect.max.y = clip_rect.max.y;
-
-                            let scroll_x = ui.input(|input| input.smooth_scroll_delta.x);
-                            if scroll_x != 0. {
-                                let max = self.info.end_time.as_micros() as f32 - rect.width();
-                                self.state.start_micros =
-                                    (self.state.start_micros - scroll_x).clamp(0., max);
-                            }
-
-                            ui.shrink_clip_rect(rect);
-                            for row in task_rows {
-                                task_row(ui, self.state.start_micros, row);
-                            }
-
-                            for row in task_rows {
-                                spawn_line(ui, cursor, self.state.start_micros, row);
-                                waker_lines(ui, cursor, self.state.start_micros, row);
-                            }
-                        });
-                    });
-                });
+            });
         });
     }
 }
 
-static TASK_ROW_HEIGHT: f32 = 42.;
-static SECTION_HEIGHT: f32 = 20.;
-static SECTION_OFFSET: f32 = (TASK_ROW_HEIGHT - SECTION_HEIGHT) / 2.;
+fn time_bar(ui: &mut egui::Ui, state: &State) -> egui::Response {
+    let available_size = ui.available_size();
 
-fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::Response {
+    let desired_size = egui::vec2(available_size.x, 20.);
+    let (rect, response) =
+        ui.allocate_exact_size(desired_size, egui::Sense::CLICK | egui::Sense::HOVER);
+
+    if ui.is_rect_visible(rect) {
+        let fill_color = egui::Color32::from_gray(0xf4);
+        let stroke = egui::Stroke {
+            width: 1.,
+            color: egui::Color32::from_gray(0xe6),
+        };
+        let painter = ui.painter();
+        painter.rect(rect, 0., fill_color, stroke, egui::StrokeKind::Inside);
+        painter.line(
+            vec![
+                egui::pos2(rect.min.x + 100., rect.min.y),
+                egui::pos2(rect.min.x + 100., rect.max.y),
+            ],
+            stroke,
+        );
+
+        let ns_per_pixel = state.zoom.nanos_per_pixel();
+        let start_ns = state.start_nanos;
+        let width = available_size.x - 100.;
+        let width_ns = ns_per_pixel * width;
+        let min_tick_ns = ns_per_pixel * 200.;
+        let exp = min_tick_ns.log10().ceil();
+        let tick_width_ns = 10_f32.powf(exp);
+        let (tick_width_ns, subticks, effective_exp) = if tick_width_ns / 4. > min_tick_ns {
+            (tick_width_ns / 4., 5, exp - 2.)
+        } else if tick_width_ns / 2. > min_tick_ns {
+            (tick_width_ns / 2., 5, exp - 1.)
+        } else {
+            (tick_width_ns, 10, exp)
+        };
+        let effective_exp = effective_exp.min(8.);
+
+        let rect = egui::Rect {
+            // 100. is the width of the task labels
+            min: rect.min + egui::vec2(100., 0.),
+            max: rect.max,
+        };
+        ui.shrink_clip_rect(rect);
+
+        let start_label_ns = start_ns - ((start_ns as u64) % (tick_width_ns as u64)) as f32;
+        let mut label_ns = start_label_ns;
+        let visuals = ui.style().interact_selectable(&response, false);
+        let tick_width_pixels = tick_width_ns / ns_per_pixel;
+        while label_ns <= start_ns + width_ns {
+            let label_x = (label_ns - start_ns) / ns_per_pixel;
+            let label_rect = egui::Rect {
+                min: rect.min + egui::vec2(label_x, 0.),
+                max: egui::pos2(rect.min.x + label_x + 100., rect.max.y),
+            };
+
+            ui.painter().line(
+                vec![
+                    epaint::pos2(label_rect.min.x, label_rect.min.y),
+                    epaint::pos2(label_rect.min.x, label_rect.max.y),
+                ],
+                stroke,
+            );
+            for subtick in 1..subticks {
+                let x = label_rect.min.x + subtick as f32 * (tick_width_pixels / subticks as f32);
+                ui.painter().line(
+                    vec![
+                        epaint::pos2(x, label_rect.max.y - 5.),
+                        epaint::pos2(x, label_rect.max.y),
+                    ],
+                    stroke,
+                );
+            }
+
+            let secs = (label_ns as u64) / 1_000_000_000;
+            let hours = secs / (60 * 60);
+            let mins = (secs / 60) % (60 * 60);
+            let secs = secs % 60;
+            let maybe_hours = if hours > 0 {
+                format!("{hours:02}:")
+            } else {
+                String::new()
+            };
+            let maybe_subsec = if effective_exp < 9. {
+                let millis = (label_ns as u64 / 1_000_000) % 1_000;
+                let maybe_micros = if effective_exp < 6. {
+                    let micros = (label_ns as u64 / 1_000) % 1_000;
+                    let maybe_nanos = if effective_exp < 3. {
+                        let nanos = label_ns as u64 % 1_000;
+                        format!(".{nanos}")
+                    } else {
+                        String::new()
+                    };
+                    format!(".{micros:03}{maybe_nanos}")
+                } else {
+                    String::new()
+                };
+                format!(".{millis:03}{maybe_micros}")
+            } else {
+                String::new()
+            };
+
+            let time = format!("{maybe_hours}{mins:02}:{secs:02}{maybe_subsec}");
+
+            let mut layout_job = egui::text::LayoutJob::simple_singleline(
+                time,
+                egui::FontId::proportional(11.),
+                visuals.text_color(),
+            );
+            layout_job.wrap.max_width = desired_size.x;
+            layout_job.wrap.max_rows = 1;
+            let galley = ui.fonts(|fonts| fonts.layout_job(layout_job));
+            let text_shape = epaint::TextShape::new(
+                label_rect.left_top() + egui::vec2(4., 3.),
+                galley,
+                visuals.text_color(),
+            );
+            ui.painter().add(text_shape);
+
+            label_ns += tick_width_ns;
+        }
+    }
+
+    response
+}
+
+fn task_row(ui: &mut egui::Ui, state: &State, task_row: &TaskRow) -> egui::Response {
     let total_width = task_row.start_time.micros as f32 + task_row.total_duration();
     let desired_size = egui::vec2(total_width, 42.0);
     let (rect, response) =
         ui.allocate_exact_size(desired_size, egui::Sense::CLICK | egui::Sense::HOVER);
 
-    let mut x = task_row.start_time.as_micros() as f32 - start_micros;
+    let mut curr_ns = task_row.start_time.as_nanos() as f32 - state.start_nanos;
     let radius = 0.;
     if ui.is_rect_visible(rect) {
         for section in &task_row.sections {
-            let min_x = rect.min.x + x;
+            let end_ns = curr_ns + (section.duration * 1_000) as f32;
+            let x = curr_ns / state.zoom.nanos_per_pixel();
+            let end_x = end_ns / state.zoom.nanos_per_pixel();
             let sec_rect = egui::Rect {
-                min: egui::pos2(min_x, rect.min.y + SECTION_OFFSET),
+                min: egui::pos2(rect.min.x + x, rect.min.y + SECTION_OFFSET),
                 max: egui::pos2(
-                    min_x + section.duration as f32,
+                    rect.min.x + end_x,
                     rect.min.y + SECTION_OFFSET + SECTION_HEIGHT,
                 ),
             };
-            x += section.duration as f32;
 
             let fill_color = match section.state {
                 TaskState::Active | TaskState::ActiveScheduled => {
@@ -159,6 +331,8 @@ fn task_row(ui: &mut egui::Ui, start_micros: f32, task_row: &TaskRow) -> egui::R
                 stroke,
                 egui::StrokeKind::Inside,
             );
+
+            curr_ns = end_ns;
         }
     }
 
@@ -241,10 +415,12 @@ fn task_label(ui: &mut egui::Ui, task_row: &TaskRow) -> egui::Response {
 
     response
 }
-fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &TaskRow) {
+
+fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, state: &State, row: &TaskRow) {
     let Some(spawn) = &row.spawn else { return };
 
-    let spawn_x = cursor.x + (row.start_time.clone() + spawn.ts).as_micros() as f32 - start_micros;
+    let spawn_ns_offset = (row.start_time.clone() + spawn.ts).as_nanos() as f32 - state.start_nanos;
+    let spawn_x = cursor.x + (spawn_ns_offset / state.zoom.nanos_per_pixel());
     let spawn_stroke: egui::Stroke = egui::Stroke {
         width: 1.,
         color: egui::Color32::from_rgb(0x09, 0xe3, 0x64),
@@ -266,10 +442,11 @@ fn spawn_line(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &Ta
     link_line(ui, cursor, line);
 }
 
-fn waker_lines(ui: &mut egui::Ui, cursor: egui::Pos2, start_micros: f32, row: &TaskRow) {
+fn waker_lines(ui: &mut egui::Ui, cursor: egui::Pos2, state: &State, row: &TaskRow) {
     for waking in &row.wakings {
-        let wake_x =
-            cursor.x + (row.start_time.clone() + waking.ts).as_micros() as f32 - start_micros;
+        let wake_ns_offset =
+            (row.start_time.clone() + waking.ts).as_nanos() as f32 - state.start_nanos;
+        let wake_x = cursor.x + (wake_ns_offset / state.zoom.nanos_per_pixel());
         let from_idx = match &waking.kind {
             WakeRecordKind::Wake { by: Some(by_idx) }
             | WakeRecordKind::WakeByRef { by: Some(by_idx) }
