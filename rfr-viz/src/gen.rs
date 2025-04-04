@@ -75,6 +75,14 @@ fn write_viz(writer: impl io::Write, info: RecordingInfo, name: String) {
                     length = chart_time(section.duration),
                 ).unwrap();
             }
+            if let Some(state) = row.last_state {
+                let duration =
+                    info.end_time.as_micros() - (row.start_time.as_micros() + row.total_duration());
+                write!(out_fh,
+                    r#"<div title="{state}" class="task-state {state}" style="width: {length}px; max-width: {length}px;"></div>"#,
+                    length = chart_time(duration),
+                ).unwrap();
+            }
             writeln!(out_fh).unwrap();
         }
 

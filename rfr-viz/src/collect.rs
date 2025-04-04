@@ -332,14 +332,14 @@ pub(crate) struct TaskRow {
     pub(crate) start_time: rec::WinTimestamp,
     pub(crate) task: Task,
     pub(crate) sections: Vec<TaskSection>,
+    pub(crate) last_state: Option<TaskState>,
     pub(crate) spawn: Option<SpawnRecord>,
     pub(crate) wakings: Vec<WakeRecord>,
 }
 
 impl TaskRow {
-    pub(crate) fn total_duration(&self) -> f32 {
-        let total_duration: u64 = self.sections.iter().map(|s| s.duration).sum();
-        total_duration as f32
+    pub(crate) fn total_duration(&self) -> u64 {
+        self.sections.iter().map(|s| s.duration).sum()
     }
 }
 
@@ -349,7 +349,7 @@ pub(crate) struct TaskSection {
     pub(crate) state: TaskState,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum TaskState {
     Active,
     Idle,
@@ -659,51 +659,26 @@ pub(crate) fn collect_into_rows(
                 },
             };
 
-            match section {
-                Section::New(state) => {
-                    task_sections.push(TaskSection {
-                        duration: current.ts.saturating_sub(&prev.ts),
-                        state,
-                    });
-                }
-                Section::ReplaceWith {
-                    replace_last_n_sections,
-                    new_state,
-                } => {
-                    // TODO(hds): should probably emit a warning if this would be less than 2.
-                    task_sections
-                        .truncate(task_sections.len().saturating_sub(replace_last_n_sections));
-                    task_sections.push(TaskSection {
-                        duration: current.ts.saturating_sub(&prev.ts),
-                        state: new_state,
-                    });
-                }
-                Section::ExtendLast => {
-                    if let Some(last) = task_sections.last_mut() {
-                        last.duration += current.ts.saturating_sub(&prev.ts);
-                    } else {
-                        // Report error (this state shouldn't occur)
-                    }
-                }
-                Section::Invalid { .. } => {
-                    // Report warning and then continue
-                }
-            }
+            extend_task_sections(&mut task_sections, section, prev.ts, current.ts);
         }
+
+        let last_state = last_state(&task_records, &mut task_sections);
 
         println!("\n======== {task:?} ========");
         println!("task_records: {task_records:?}");
-        println!("wake_records: {wake_records:?}");
-        println!("spawn_records: {spawn_record:?}");
         println!("task_sections: {task_sections:?}");
+        println!("last_state: {last_state:?}");
+        println!("spawn_records: {spawn_record:?}");
+        println!("wake_records: {wake_records:?}");
         println!("======== ======== ======== ========");
 
         task_rows.push(TaskRow {
             index,
             start_time,
             task,
-            spawn: spawn_record,
             sections: task_sections,
+            last_state,
+            spawn: spawn_record,
             wakings: wake_records,
         });
     }
@@ -724,4 +699,73 @@ enum Section {
         #[allow(dead_code)]
         to: TaskRecordKind,
     },
+}
+
+fn extend_task_sections(
+    task_sections: &mut Vec<TaskSection>,
+    section: Section,
+    prev_ts: TaskTimestamp,
+    current_ts: TaskTimestamp,
+) {
+    match section {
+        Section::New(state) => {
+            task_sections.push(TaskSection {
+                duration: current_ts.saturating_sub(&prev_ts),
+                state,
+            });
+        }
+        Section::ReplaceWith {
+            replace_last_n_sections,
+            new_state,
+        } => {
+            // TODO(hds): should probably emit a warning if this would be less than 2.
+            task_sections.truncate(task_sections.len().saturating_sub(replace_last_n_sections));
+            task_sections.push(TaskSection {
+                duration: current_ts.saturating_sub(&prev_ts),
+                state: new_state,
+            });
+        }
+        Section::ExtendLast => {
+            if let Some(last) = task_sections.last_mut() {
+                last.duration += current_ts.saturating_sub(&prev_ts);
+            } else {
+                // Report error (this state shouldn't occur)
+            }
+        }
+        Section::Invalid { .. } => {
+            // Report warning and then continue
+        }
+    }
+}
+
+fn last_state(
+    task_records: &[TaskRecord],
+    task_sections: &mut Vec<TaskSection>,
+) -> Option<TaskState> {
+    if task_records.len() <= 1 {
+        return None;
+    }
+
+    let prev_section = task_sections.last()?;
+    let last_record = task_records.last()?;
+
+    match &last_record.kind {
+        TaskRecordKind::New => {
+            // This is an error, but we will have caught it in the main loop
+            None
+        }
+        TaskRecordKind::PollStart => Some(TaskState::Active),
+        TaskRecordKind::PollEnd => Some(TaskState::Idle),
+        TaskRecordKind::Drop => None,
+        TaskRecordKind::Wake => match prev_section.state {
+            TaskState::Active => Some(TaskState::ActiveScheduled),
+            TaskState::Idle => Some(TaskState::IdleScheduled),
+            TaskState::ActiveScheduled | TaskState::IdleScheduled => {
+                let last_section = task_sections
+                    .pop()
+                    .expect("we already checked that `task_records` has at least 2 elements");
+                Some(last_section.state)
+            }
+        },
+    }
 }

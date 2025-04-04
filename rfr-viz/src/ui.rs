@@ -2,11 +2,11 @@ use std::{collections::HashMap, fs};
 
 use eframe::{egui, epaint};
 use egui_extras::StripBuilder;
-use rfr::common::TaskKind;
+use rfr::{common::TaskKind, rec};
 
 use crate::collect::{
     chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnRecordKind, TaskIndex,
-    TaskRow, TaskState, WakeRecordKind,
+    TaskRow, TaskSection, TaskState, WakeRecordKind,
 };
 
 static TASK_ROW_HEIGHT: f32 = 42.;
@@ -153,7 +153,7 @@ impl RfrViz {
 
                                 ui.shrink_clip_rect(rect);
                                 for row in task_rows {
-                                    task_row(ui, &self.state, row);
+                                    task_row(ui, &self.state, self.info.end_time.clone(), row);
                                 }
 
                                 for row in task_rows {
@@ -295,8 +295,13 @@ fn time_bar(ui: &mut egui::Ui, state: &State) -> egui::Response {
     response
 }
 
-fn task_row(ui: &mut egui::Ui, state: &State, task_row: &TaskRow) -> egui::Response {
-    let total_width = task_row.start_time.micros as f32 + task_row.total_duration();
+fn task_row(
+    ui: &mut egui::Ui,
+    state: &State,
+    end_time: rec::WinTimestamp,
+    task_row: &TaskRow,
+) -> egui::Response {
+    let total_width = task_row.start_time.micros as f32 + task_row.total_duration() as f32;
     let desired_size = egui::vec2(total_width, 42.0);
     let (rect, response) =
         ui.allocate_exact_size(desired_size, egui::Sense::CLICK | egui::Sense::HOVER);
@@ -304,7 +309,12 @@ fn task_row(ui: &mut egui::Ui, state: &State, task_row: &TaskRow) -> egui::Respo
     let mut curr_ns = task_row.start_time.as_nanos() as f32 - state.start_nanos;
     let radius = 0.;
     if ui.is_rect_visible(rect) {
-        for section in &task_row.sections {
+        let last_section = task_row.last_state.as_ref().map(|state| TaskSection {
+            state: *state,
+            duration: end_time.as_micros()
+                - (task_row.start_time.as_micros() + task_row.total_duration()),
+        });
+        for section in task_row.sections.iter().chain(last_section.iter()) {
             let end_ns = curr_ns + (section.duration * 1_000) as f32;
             let x = curr_ns / state.zoom.nanos_per_pixel();
             let end_x = end_ns / state.zoom.nanos_per_pixel();
