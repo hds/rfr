@@ -28,7 +28,7 @@ fn main() {
         }
     });
 
-    flusher.flush();
+    flusher.wait_flush().unwrap();
 }
 
 #[track_caller]

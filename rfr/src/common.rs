@@ -95,10 +95,10 @@ pub enum Parent {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Event {
-    callsite_id: CallsiteId,
-    parent: Parent,
-    split_field_values: Vec<FieldValue>,
-    dynamic_fields: Vec<Field>,
+    pub callsite_id: CallsiteId,
+    pub parent: Parent,
+    pub split_field_values: Vec<FieldValue>,
+    pub dynamic_fields: Vec<Field>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]

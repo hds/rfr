@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{self, AtomicBool},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use jiff::{tz::TimeZone, Timestamp, Zoned};
@@ -55,6 +55,7 @@ pub struct ChunkedWriter {
 
     callsites_writer: Mutex<ChunkedCallsitesWriter<fs::File>>,
     chunk_buffers: Mutex<Vec<ChunkBuffer>>,
+    notifiers: Mutex<Vec<ChunkWriteNotifier>>,
 }
 
 impl ChunkedWriter {
@@ -82,6 +83,7 @@ impl ChunkedWriter {
             closed: false.into(),
             callsites_writer: Mutex::new(callsites_writer),
             chunk_buffers: Mutex::new(Vec::new()),
+            notifiers: Mutex::new(Vec::new()),
         };
 
         let base_time = writer.base_time;
@@ -96,6 +98,14 @@ impl ChunkedWriter {
 
     pub fn close(&self) {
         self.closed.store(true, atomic::Ordering::SeqCst);
+
+        let mut notifiers = self
+            .notifiers
+            .lock()
+            .expect("cannot notify closed. notifiers poisoned");
+        while let Some(notifier) = notifiers.pop() {
+            notifier.notify(WaitForWrite::Closed);
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -229,6 +239,15 @@ impl ChunkedWriter {
                 let writer = self.writer_for_chunk(chunk_buffer);
                 // TODO(hds): Check for errors
                 chunk_buffer.write(writer);
+
+                self.notifiers
+                    .lock()
+                    .expect("cannot notify written. notifiers poisoned")
+                    .retain(|notifier| {
+                        // Only keep notifiers which we are too early for.
+                        notifier.notify_after_ts(&end_time) == NotifyAfterTs::TooEarly
+                    });
+
                 // TODO(hds): Perhaps retain the completed sequence chunks to avoid allocating again?
                 false
             } else {
@@ -266,6 +285,27 @@ impl ChunkedWriter {
         // TODO(hds): Flush the callsites again afterwards to ensure consistency?
     }
 
+    /// Wait for the current active chunk to be written to disk.
+    ///
+    /// Chunks are normally written to disk following a short delay after their completion time.
+    /// This method takes this delay into account, it takes the time this method is called and
+    /// waits until the chunk where a record is buffered at that time is written to disk, not just
+    /// the next chunk (which may not contain the hypothetical record) is written.
+    pub fn wait_for_write_timeout(&self, timeout_dur: Duration) -> Result<(), WaitForWriteError> {
+        let now = AbsTimestamp::now();
+        let notifier = ChunkWriteNotifier::new(now);
+        self.notifiers
+            .lock()
+            .expect("cannot wait for write. notifiers poisoned")
+            .push(notifier.clone());
+
+        match notifier.wait_for_write_timeout(timeout_dur) {
+            WaitForWrite::Written => Ok(()),
+            WaitForWrite::Timeout => Err(WaitForWriteError::Timeout),
+            WaitForWrite::Closed => Err(WaitForWriteError::Closed),
+        }
+    }
+
     fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
         fs::File::create(self.chunk_path(&chunk.header.interval.base_time)).unwrap()
     }
@@ -280,6 +320,101 @@ impl ChunkedWriter {
             eprintln!("Failed to flush callsites. Recording may be inconsistent: {flush_error}");
         }
     }
+}
+
+/// Error waiting for a chunk to be written
+#[derive(Debug, Clone, Copy)]
+pub enum WaitForWriteError {
+    /// The provided timeout was reached before the chunk was written.
+    Timeout,
+    /// The chunk writer was closed before the chunk was written.
+    Closed,
+}
+
+impl fmt::Display for WaitForWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Timeout => "timeout was reached before chunk was written",
+                Self::Closed => "chunk writer was closed before chunk was written",
+            }
+        )
+    }
+}
+
+impl error::Error for WaitForWriteError {}
+
+#[derive(Debug, Clone)]
+struct ChunkWriteNotifier {
+    ts: AbsTimestamp,
+    pair: Arc<(Mutex<Option<WaitForWrite>>, Condvar)>,
+}
+
+impl ChunkWriteNotifier {
+    fn new(ts: AbsTimestamp) -> Self {
+        Self {
+            ts,
+            pair: Arc::new((Mutex::new(None), Condvar::new())),
+        }
+    }
+
+    fn notify_after_ts(&self, chunk_end_time: &AbsTimestamp) -> NotifyAfterTs {
+        if &self.ts > chunk_end_time {
+            return NotifyAfterTs::TooEarly;
+        }
+
+        self.notify(WaitForWrite::Written);
+        NotifyAfterTs::Notified
+    }
+
+    fn notify(&self, val: WaitForWrite) {
+        let (lock, cvar) = &*self.pair;
+        let mut written = lock
+            .lock()
+            .expect("can't notify. chunk writer notifier poisoned");
+
+        *written = Some(val);
+        cvar.notify_one();
+    }
+
+    fn wait_for_write_timeout(&self, timeout_dur: Duration) -> WaitForWrite {
+        let (lock, cvar) = &*self.pair;
+        let mut written = lock
+            .lock()
+            .expect("can't wait. chunk writer notifier poisoned");
+        let wait_until = Instant::now() + timeout_dur;
+        loop {
+            let timeout_dur = wait_until.saturating_duration_since(Instant::now());
+            if timeout_dur.is_zero() {
+                break WaitForWrite::Timeout;
+            }
+            let (guard, timeout) = cvar
+                .wait_timeout(written, timeout_dur)
+                .expect("can't wait. chunk writer notifier poisoned");
+            written = guard;
+            if let Some(val) = *written {
+                // Even if we have timed out, if we have a value, we return that.
+                break val;
+            } else if timeout.timed_out() {
+                break WaitForWrite::Timeout;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NotifyAfterTs {
+    Notified,
+    TooEarly,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WaitForWrite {
+    Written,
+    Closed,
+    Timeout,
 }
 
 #[derive(Debug)]
@@ -773,7 +908,14 @@ impl ChunkLoader {
                 let file = fs::File::open(&self.path.path).unwrap();
                 match Chunk::try_from_io(file) {
                     Ok(chunk) => self.state = ChunkLoaderState::Chunk(chunk),
-                    Err(err) => println!("failed to load chunk: {err}"), // do something...
+                    Err(err) => println!(
+                        "failed to load chunk={file_path}: {err:?}",
+                        file_path = &self
+                            .path
+                            .path
+                            .to_str()
+                            .unwrap_or("couldn't convert file path")
+                    ), // do something...
                 }
             }
             _ => {}
@@ -805,8 +947,8 @@ pub fn from_path(recording_path: String) -> Result<Recording, RecordingReadError
         }
 
         match entry.file_name().to_str() {
-            Some("meta.rfr") => {
-                // We've already read the meta data, so we'll skip it (and any other "meta.rfr" files).
+            Some("meta.rfr") | Some("callsites.rfr") => {
+                // We've already read the meta data, so we'll skip it (and any other metadata files).
                 continue;
             }
             Some(file_name) if file_name.ends_with(".rfr") => {
