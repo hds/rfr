@@ -24,7 +24,7 @@ fn main() {
         _ = jh.await;
     });
 
-    flusher.flush();
+    flusher.wait_flush().unwrap();
 }
 
 #[track_caller]
