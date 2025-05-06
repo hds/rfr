@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
+    error, fmt,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use tracing::{span, subscriber::Interest, Event, Metadata, Subscriber};
@@ -28,10 +30,33 @@ pub struct Flusher {
 }
 
 impl Flusher {
-    pub fn flush(&self) {
-        self.writer.write_all_chunks();
+    /// Waits until the current traces have been flushed to disk
+    ///
+    /// In order to ensure that consistent chunks are written, this method will wait until the
+    /// chunk which would contain a trace recorded at the moment it is called is written to disk
+    /// before returning.
+    pub fn wait_flush(&self) -> Result<(), FlushError> {
+        self.writer
+            .wait_for_write_timeout(Duration::from_micros(
+                self.writer.chunk_period_micros() as u64 * 2,
+            ))
+            .map_err(|inner| FlushError { inner })
     }
 }
+
+/// Error waiting for a chunk to be written
+#[derive(Debug, Clone, Copy)]
+pub struct FlushError {
+    inner: chunked::WaitForWriteError,
+}
+
+impl fmt::Display for FlushError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+impl error::Error for FlushError {}
 
 pub struct RfrChunkedLayer {
     writer_handle: WriterHandle,

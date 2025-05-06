@@ -61,7 +61,17 @@ viz-gen-thousand-tasks-chunked: create-examples-output
 
 thousand-tasks-chunked: example-thousand-tasks-chunked viz-gen-thousand-tasks-chunked
 
-all-examples: spawn-streamed ping-pong-streamed spawn-chunked ping-pong-chunked barrier-chunked thousand-tasks-chunked
+[working-directory: 'examples-output']
+example-long-chunked: create-examples-output
+    cargo run -p rfr-subscriber --example long
+
+[working-directory: 'examples-output']
+viz-gen-long-chunked: create-examples-output
+    cargo run -p rfr-viz -- generate chunked-long.rfr --name long
+
+long-chunked: example-long-chunked viz-gen-long-chunked
+
+all-examples: spawn-streamed ping-pong-streamed spawn-chunked ping-pong-chunked barrier-chunked thousand-tasks-chunked long-chunked
 
 [working-directory: 'examples-output']
 clean-all:
@@ -70,6 +80,7 @@ clean-all:
     rm -rf chunked-ping-pong.rfr
     rm -rf chunked-spawn.rfr
     rm -rf chunked-thousand-tasks.rfr
+    rm -rf chunked-long.rfr
     rm -f ping-pong-chunked.html
     rm -f ping-pong-stream.html
     rm -f recording-ping_pong-stream.rfr
@@ -77,3 +88,4 @@ clean-all:
     rm -f spawn-chunked.html
     rm -f spawn-stream.html
     rm -f thousand-tasks.html
+    rm -f long.html

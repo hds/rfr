@@ -33,7 +33,7 @@ fn main() {
         }
     });
 
-    flusher.flush();
+    flusher.wait_flush().unwrap();
 }
 
 async fn ping_pong(count: usize, tx: mpsc::Sender<()>, mut rx: mpsc::Receiver<()>) {

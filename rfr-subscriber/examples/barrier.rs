@@ -46,7 +46,7 @@ fn main() {
         .unwrap();
     });
 
-    flusher.flush();
+    flusher.wait_flush().unwrap();
 }
 
 #[track_caller]
