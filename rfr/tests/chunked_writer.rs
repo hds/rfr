@@ -1,7 +1,10 @@
-use std::{sync::Arc, thread, time::Duration};
+use std::{fs, sync::Arc, thread, time::Duration};
 
 use rfr::{
-    chunked::{self, from_path, Callsite, CallsiteId, ChunkedWriter, Meta, Record, RecordData},
+    chunked::{
+        self, from_path, Callsite, CallsiteId, ChunkedWriter, Meta, NewChunkedWriterError, Record,
+        RecordData,
+    },
     common::{Event, FieldName, FieldValue, InstrumentationId, Kind, Level, Parent},
     rec::AbsTimestamp,
 };
@@ -35,10 +38,9 @@ fn no_objects(iids: &[InstrumentationId]) -> Vec<Option<chunked::Object>> {
 
 #[test]
 fn record_single_event() {
-    let base_dir = tempdir().unwrap();
-    let recording_dir = base_dir.path().to_str().unwrap().to_string();
+    let recording_dir = tempdir().unwrap().path().join("recording.rfr");
 
-    let writer = Arc::new(ChunkedWriter::try_new(recording_dir.clone()).unwrap());
+    let writer = Arc::new(ChunkedWriter::try_new(&recording_dir).unwrap());
 
     spawn_writer_loop(Arc::clone(&writer));
     let timestamp = AbsTimestamp::now();
@@ -77,7 +79,7 @@ fn record_single_event() {
         .unwrap();
     writer.close();
 
-    let mut recording = from_path(recording_dir).unwrap();
+    let mut recording = from_path(recording_dir.to_str().unwrap().to_owned()).unwrap();
     let chunks: Vec<_> = recording.chunks_lossy().flatten().collect();
 
     assert!(!chunks.is_empty());
@@ -97,4 +99,43 @@ fn record_single_event() {
         timestamp
     );
     assert_eq!(actual_record.data, RecordData::Event { event });
+}
+
+#[test]
+fn directory_already_exists() {
+    let recording_dir = tempdir().unwrap().path().join("recording.rfr");
+    //let recording_dir = base_dir..to_str().unwrap().to_string();
+
+    fs::create_dir_all(&recording_dir).unwrap();
+
+    let result = ChunkedWriter::try_new(recording_dir);
+    assert!(
+        result.is_err(),
+        "expected `ChunkedWriter::try_new` to return an error"
+    );
+
+    match result.unwrap_err() {
+        NewChunkedWriterError::AlreadyExists => {} // expected result
+        other_err => panic!("expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"),
+    }
+}
+
+#[test]
+fn meta_already_exists() {
+    let recording_dir = tempdir().unwrap().path().join("recording.rfr");
+    //let base_dir = tempdir().unwrap();
+    //let recording_dir = base_dir.path().to_str().unwrap().to_string();
+
+    _ = ChunkedWriter::try_new(&recording_dir).unwrap();
+
+    let result = ChunkedWriter::try_new(recording_dir.clone());
+    assert!(
+        result.is_err(),
+        "expected `ChunkedWriter::try_new` to return an error"
+    );
+
+    match result.unwrap_err() {
+        NewChunkedWriterError::AlreadyExists => {} // expected result
+        other_err => panic!("expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"),
+    }
 }

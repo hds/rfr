@@ -27,7 +27,6 @@ mod sequence;
 
 pub use callsite::{
     Callsite, CallsiteId, ChunkedCallsites, ChunkedCallsitesWriter, FlushCallsitesError,
-    NewChunkedCallsitesWriterError,
 };
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use record::{Meta, Record, RecordData};
@@ -44,7 +43,7 @@ fn current_software_version() -> FormatIdentifier {
 
 #[derive(Debug)]
 pub struct ChunkedWriter {
-    root_dir: String,
+    root_dir: PathBuf,
     base_time: AbsTimestampSecs,
 
     /// The length of time a chunk is "responsible" for. This value must either be a multiple of
@@ -59,25 +58,33 @@ pub struct ChunkedWriter {
 }
 
 impl ChunkedWriter {
-    pub fn try_new(root_dir: String) -> Result<Self, NewChunkedWriterError> {
+    pub fn try_new<P>(root_dir: P) -> Result<Self, NewChunkedWriterError>
+    where
+        P: AsRef<Path>,
+    {
+        let root_dir = root_dir.as_ref();
+
         let timestamp = rec::AbsTimestamp::now();
         let base_time = AbsTimestampSecs::from(timestamp.clone());
         let meta = ChunkedMeta::new(vec![current_software_version()]);
-        fs::create_dir_all(&root_dir).unwrap();
-        if !Self::write_meta(&root_dir, &meta) {
-            return Err(NewChunkedWriterError::WriteMetaFailed);
+
+        if let Ok(true) = root_dir.try_exists() {
+            return Err(NewChunkedWriterError::AlreadyExists);
         }
+
+        fs::create_dir_all(root_dir).map_err(NewChunkedWriterError::CreateRecordingDirFailed)?;
+        Self::write_meta(root_dir, &meta)?;
 
         let callsites_path = Path::new(&root_dir).join("callsites.rfr");
         let callsites_file = fs::File::create(callsites_path)
-            .map_err(NewChunkedWriterError::CreateCallsitesFailed)?;
+            .map_err(|err| NewChunkedWriterError::WriteCallsitesFailed(WriteError::Io(err)))?;
         let callsites_writer = ChunkedCallsitesWriter::try_new(callsites_file)
             .map_err(NewChunkedWriterError::WriteCallsitesFailed)?;
 
         // By default, chunks contain 1 second of execution time.
         let chunk_period_micros = 1_000_000;
         let writer = Self {
-            root_dir,
+            root_dir: root_dir.to_owned(),
             base_time,
             chunk_period_micros,
             closed: false.into(),
@@ -112,15 +119,19 @@ impl ChunkedWriter {
         self.closed.load(atomic::Ordering::SeqCst)
     }
 
-    fn write_meta(base_dir: &String, meta: &ChunkedMeta) -> bool {
-        let path = Path::new(base_dir).join("meta.rfr");
+    fn write_meta(base_dir: &Path, meta: &ChunkedMeta) -> Result<(), NewMetaError> {
+        let path = base_dir.join("meta.rfr");
         {
-            let mut file = fs::File::create(path).unwrap();
+            let mut file = fs::File::create_new(path).map_err(|err| match err.kind() {
+                io::ErrorKind::AlreadyExists => NewMetaError::AlreadyExists,
+                _ => NewMetaError::WriteFailed(WriteError::Io(err)),
+            })?;
 
-            postcard::to_io(meta, &mut file).unwrap();
+            postcard::to_io(meta, &mut file)
+                .map_err(|err| NewMetaError::WriteFailed(WriteError::Serialization(err)))?;
         }
 
-        true
+        Ok(())
     }
 
     fn ensure_dir(&self, time: &AbsTimestampSecs) {
@@ -417,20 +428,27 @@ enum WaitForWrite {
     Timeout,
 }
 
+/// An error occuring when creating a new [`ChunkedWriter`].
 #[derive(Debug)]
 pub enum NewChunkedWriterError {
-    WriteMetaFailed,
-    CreateCallsitesFailed(io::Error),
-    WriteCallsitesFailed(NewChunkedCallsitesWriterError),
+    /// There is already a chunked recording at this location
+    AlreadyExists,
+    /// Could not create the directory for the chunked recording
+    CreateRecordingDirFailed(io::Error),
+    /// There was a failure writing the meta file
+    WriteMetaFailed(WriteError),
+    /// There was a failure writing the callsites file
+    WriteCallsitesFailed(WriteError),
 }
 
 impl fmt::Display for NewChunkedWriterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WriteMetaFailed => write!(f, "failed to write `meta.rfr` file"),
-            Self::CreateCallsitesFailed(inner) => {
-                write!(f, "failed to create `callsites.rfr` file: {inner}")
+            Self::AlreadyExists => write!(f, "a chunked recording already exists at this location"),
+            Self::CreateRecordingDirFailed(inner) => {
+                write!(f, "parent directory could not be created: {inner}")
             }
+            Self::WriteMetaFailed(inner) => write!(f, "failed to write `meta.rfr`: {inner}"),
             Self::WriteCallsitesFailed(inner) => {
                 write!(f, "failed to write `callsites.rfr` file: {inner}")
             }
@@ -438,6 +456,60 @@ impl fmt::Display for NewChunkedWriterError {
     }
 }
 impl error::Error for NewChunkedWriterError {}
+
+impl From<NewMetaError> for NewChunkedWriterError {
+    fn from(value: NewMetaError) -> Self {
+        match value {
+            NewMetaError::AlreadyExists => NewChunkedWriterError::AlreadyExists,
+            NewMetaError::WriteFailed(inner) => NewChunkedWriterError::WriteMetaFailed(inner),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NewMetaError {
+    AlreadyExists,
+    WriteFailed(WriteError),
+}
+
+impl fmt::Display for NewMetaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyExists => {
+                write!(
+                    f,
+                    "cannot write `meta.rfr`: file already exists. \
+                    There is probably already a chunked recording at this location"
+                )
+            }
+            Self::WriteFailed(inner) => inner.fmt(f),
+        }
+    }
+}
+
+impl error::Error for NewMetaError {}
+
+/// Error occuring when writing a serialized file that is part of a chunked recording.
+#[derive(Debug)]
+pub enum WriteError {
+    /// An IO error occurred when creating the file.
+    Io(io::Error),
+    /// An error occurred when writing the serialized contents of the file.
+    Serialization(postcard::Error),
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(inner) => write!(f, "IO error: {}", inner),
+            Self::Serialization(inner) => {
+                write!(f, "serialization error: {}", inner)
+            }
+        }
+    }
+}
+
+impl error::Error for WriteError {}
 
 #[non_exhaustive]
 #[derive(Debug)]

@@ -9,6 +9,7 @@ use std::{error, fmt, io};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    chunked::WriteError,
     common::{Field, FieldName, Kind, Level},
     identifier::{FormatIdentifier, FormatVariant, ReadFormatIdentifierError},
 };
@@ -162,7 +163,7 @@ where
     ///
     /// This method will fail if the software defined format identifier cannot be written using the
     /// supplied writer.
-    pub fn try_new(writer: W) -> Result<Self, NewChunkedCallsitesWriterError> {
+    pub fn try_new(writer: W) -> Result<Self, WriteError> {
         let mut callsite_writer = Self {
             chunked_callsites: ChunkedCallsites::new(Vec::new()),
             written_callsites: 0,
@@ -173,7 +174,7 @@ where
             &callsite_writer.chunked_callsites.format_identifier,
             &mut callsite_writer.writer,
         )
-        .map_err(|inner| NewChunkedCallsitesWriterError { inner })?;
+        .map_err(WriteError::Serialization)?;
 
         Ok(callsite_writer)
     }
@@ -223,19 +224,6 @@ where
     }
 }
 
-/// Error occuring when creating a new [`ChunkedCallsitesWriter`]
-#[derive(Debug)]
-pub struct NewChunkedCallsitesWriterError {
-    /// Inner postcard error.
-    inner: postcard::Error,
-}
-
-impl NewChunkedCallsitesWriterError {
-    pub fn inner_error(&self) -> &postcard::Error {
-        &self.inner
-    }
-}
-
 /// Result of pushing a callsite
 #[derive(Debug)]
 pub enum PushCallsiteResult {
@@ -245,17 +233,6 @@ pub enum PushCallsiteResult {
     /// A duplicate callsite (by `CallsiteId`) was found, the callsite wasn't pushed
     Duplicate,
 }
-
-impl fmt::Display for NewChunkedCallsitesWriterError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Could not create `ChunkedCallsitesWriter`: {error}",
-            error = self.inner
-        )
-    }
-}
-impl error::Error for NewChunkedCallsitesWriterError {}
 
 /// An error that occurred while flushing callsites to writer.
 #[derive(Debug)]
