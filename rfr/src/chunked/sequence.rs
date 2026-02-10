@@ -55,7 +55,7 @@ pub struct SeqChunkHeader {
 /// Sequence identifier
 ///
 /// The sequence identifier links together multiple sequence chunks with different parent chunks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct SeqId(u64);
 
 impl From<u64> for SeqId {

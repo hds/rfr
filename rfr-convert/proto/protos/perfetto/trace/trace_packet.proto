@@ -1,0 +1,58 @@
+/*
+ * Copyright (C) 2017 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// MINIMAL VERSION FOR RFR-CONVERT
+// This is a stripped-down version of the full Perfetto trace_packet.proto
+// that only includes the fields actually used by rfr-convert.
+// The full version has 60+ imports and hundreds of optional fields.
+
+syntax = "proto2";
+
+import "protos/perfetto/trace/track_event/track_descriptor.proto";
+import "protos/perfetto/trace/track_event/track_event.proto";
+
+package perfetto.protos;
+
+// Minimal TracePacket with only the fields used by rfr-convert
+message TracePacket {
+  // Timestamp of the TracePacket.
+  // Unit is nanoseconds. The clock source is specified by timestamp_clock_id.
+  optional uint64 timestamp = 8;
+
+  // Specifies the ID of the clock used for the TracePacket |timestamp|. Can be
+  // one of the built-in clock IDs (e.g. REALTIME, MONOTONIC) or a producer-
+  // specific ID.
+  optional uint32 timestamp_clock_id = 58;
+
+  // The |trusted_packet_sequence_id| is a monotonically increasing id that is
+  // unique per trace writer.
+  optional uint32 trusted_packet_sequence_id = 10;
+
+  // Packets emitted by the trace writer may have the following flags:
+  // - SEQ_NEEDS_INCREMENTAL_STATE (1): indicates that the packet requires
+  //   incremental state to be understood.
+  // - SEQ_INCREMENTAL_STATE_CLEARED (2): indicates that the writer has cleared
+  //   its incremental state (e.g. on session restart).
+  optional uint32 sequence_flags = 13;
+
+  // Independent messages that may be emitted by any producer.
+
+  // Describes a track for TrackEvents.
+  optional TrackDescriptor track_descriptor = 60;
+
+  // Event on a track with a category and name.
+  optional TrackEvent track_event = 11;
+}

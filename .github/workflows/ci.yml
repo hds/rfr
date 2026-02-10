@@ -76,6 +76,9 @@ jobs:
       - name: Run cargo test (viz)
         run: cargo test -p rfr-viz
 
+      - name: Run cargo test (convert)
+        run: cargo test -p rfr-convert
+
   lints:
     name: Lints
     runs-on: ubuntu-latest

@@ -30,7 +30,7 @@ pub use callsite::{
 };
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use record::{Meta, Record, RecordData};
-pub use sequence::{SeqChunk, SeqChunkBuffer};
+pub use sequence::{SeqChunk, SeqChunkBuffer, SeqChunkHeader, SeqId};
 
 fn current_software_version() -> FormatIdentifier {
     FormatIdentifier {
