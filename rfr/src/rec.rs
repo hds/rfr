@@ -58,6 +58,12 @@ impl From<Duration> for AbsTimestamp {
 }
 
 impl AbsTimestamp {
+    /// Earliest measurable time
+    pub const EARLIEST: Self = Self {
+        secs: 0,
+        subsec_micros: 1,
+    };
+
     /// Get an absolute timestamp representing the current time.
     pub fn now() -> Self {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()

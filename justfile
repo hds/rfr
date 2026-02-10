@@ -29,7 +29,11 @@ example-spawn-chunked: create-examples-output
 viz-gen-spawn-chunked: create-examples-output
     cargo run -p rfr-viz -- generate chunked-spawn.rfr --name spawn-chunked
 
-spawn-chunked: example-spawn-chunked viz-gen-spawn-chunked
+[working-directory: 'examples-output']
+convert-spawn-chunked: create-examples-output
+    cargo run -p rfr-convert -- chunked-spawn.rfr -f perfetto
+
+spawn-chunked: example-spawn-chunked viz-gen-spawn-chunked convert-spawn-chunked
 
 [working-directory: 'examples-output']
 example-ping-pong-chunked: create-examples-output
@@ -39,7 +43,11 @@ example-ping-pong-chunked: create-examples-output
 viz-gen-ping-pong-chunked: create-examples-output
     cargo run -p rfr-viz -- generate chunked-ping-pong.rfr --name ping-pong-chunked
 
-ping-pong-chunked: example-ping-pong-chunked viz-gen-ping-pong-chunked
+[working-directory: 'examples-output']
+convert-ping-pong-chunked: create-examples-output
+    cargo run -p rfr-convert -- chunked-ping-pong.rfr -f perfetto
+
+ping-pong-chunked: example-ping-pong-chunked viz-gen-ping-pong-chunked convert-ping-pong-chunked
 
 [working-directory: 'examples-output']
 example-barrier-chunked: create-examples-output
@@ -49,7 +57,11 @@ example-barrier-chunked: create-examples-output
 viz-gen-barrier-chunked: create-examples-output
     cargo run -p rfr-viz -- generate chunked-barrier.rfr --name barrier
     
-barrier-chunked: example-barrier-chunked viz-gen-barrier-chunked
+[working-directory: 'examples-output']
+convert-barrier-chunked: create-examples-output
+    cargo run -p rfr-convert -- chunked-barrier.rfr -f perfetto
+
+barrier-chunked: example-barrier-chunked viz-gen-barrier-chunked convert-barrier-chunked
     
 [working-directory: 'examples-output']
 example-thousand-tasks-chunked: create-examples-output
@@ -59,7 +71,11 @@ example-thousand-tasks-chunked: create-examples-output
 viz-gen-thousand-tasks-chunked: create-examples-output
     cargo run -p rfr-viz -- generate chunked-thousand-tasks.rfr --name thousand-tasks
 
-thousand-tasks-chunked: example-thousand-tasks-chunked viz-gen-thousand-tasks-chunked
+[working-directory: 'examples-output']
+convert-thousand-tasks-chunked: create-examples-output
+    cargo run -p rfr-convert -- chunked-thousand-tasks.rfr -f perfetto
+
+thousand-tasks-chunked: example-thousand-tasks-chunked viz-gen-thousand-tasks-chunked convert-thousand-tasks-chunked
 
 [working-directory: 'examples-output']
 example-long-chunked: create-examples-output
@@ -79,7 +95,11 @@ example-outside-runtime-chunked: create-examples-output
 viz-gen-outside-runtime-chunked: create-examples-output
     cargo run -p rfr-viz -- generate chunked-outside-runtime.rfr --name outside-runtime
 
-outside-runtime-chunked: example-outside-runtime-chunked viz-gen-outside-runtime-chunked
+[working-directory: 'examples-output']
+convert-outside-runtime-chunked: create-examples-output
+    cargo run -p rfr-convert -- chunked-outside-runtime.rfr -f perfetto
+
+outside-runtime-chunked: example-outside-runtime-chunked viz-gen-outside-runtime-chunked convert-outside-runtime-chunked
 
 all-examples: spawn-streamed ping-pong-streamed spawn-chunked ping-pong-chunked barrier-chunked thousand-tasks-chunked long-chunked outside-runtime-chunked
 

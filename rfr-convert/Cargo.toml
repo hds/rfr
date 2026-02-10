@@ -1,0 +1,10 @@
+[package]
+name = "rfr-convert"
+version = "0.0.1"
+rust-version = "1.84"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+prost = "0.13"
+rfr = { version = "0.0.1", path = "../rfr" }
