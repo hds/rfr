@@ -127,12 +127,10 @@ impl ChunkedCallsites {
     /// This method writes the entire `callsites.rfr` file out.
     pub fn to_io(&self, writer: impl io::Write) -> Result<(), io::Error> {
         let mut writer = writer;
-        postcard::to_io(&self.format_identifier, &mut writer)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        postcard::to_io(&self.format_identifier, &mut writer).map_err(io::Error::other)?;
 
         for callsite in &self.callsites {
-            postcard::to_io(callsite, &mut writer)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            postcard::to_io(callsite, &mut writer).map_err(io::Error::other)?;
         }
 
         Ok(())
