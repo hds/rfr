@@ -7,7 +7,7 @@ mod convert;
 mod generated;
 mod perfetto;
 
-use crate::convert::{convert, OutputFormat};
+use crate::convert::{OutputFormat, convert};
 
 #[derive(Parser)]
 #[command(about = "Convert rfr recordings to other trace formats", long_about = None)]

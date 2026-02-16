@@ -4,8 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tracing::{span, subscriber::Interest, Dispatch, Event, Metadata, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing::{Dispatch, Event, Metadata, Subscriber, span, subscriber::Interest};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
     chunked::CallsiteId,
@@ -14,8 +14,8 @@ use rfr::{
 };
 
 use crate::subscriber::common::{
-    get_context_task_iid, to_callsite_id, to_iid, EventKind, SpanKind, SpawnFields, SpawnSpan,
-    TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
+    EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
+    get_context_task_iid, to_callsite_id, to_iid,
 };
 
 pub struct RfrLayer {

@@ -12,8 +12,8 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 

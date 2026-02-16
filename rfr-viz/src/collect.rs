@@ -3,7 +3,7 @@ use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration
 use rfr::{
     chunked::{self, RecordData},
     common::{InstrumentationId, Task},
-    rec::{self, from_file, AbsTimestamp, WinTimestamp},
+    rec::{self, AbsTimestamp, WinTimestamp, from_file},
 };
 
 pub(crate) struct WinTimeHandle {
@@ -25,7 +25,10 @@ impl WinTimeHandle {
         let start_time = duration_from_abs_timestamp(&self.start_time);
         let duration = Duration::new(abs_time.secs, abs_time.subsec_micros * 1000);
         let window_micros = duration.saturating_sub(start_time).as_micros();
-        debug_assert!(window_micros < u64::MAX as u128, "recording time spans more than u64::MAX microseconds, which is more than 500 thousand years");
+        debug_assert!(
+            window_micros < u64::MAX as u128,
+            "recording time spans more than u64::MAX microseconds, which is more than 500 thousand years"
+        );
 
         rec::WinTimestamp {
             micros: window_micros as u64,

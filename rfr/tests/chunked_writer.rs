@@ -2,8 +2,8 @@ use std::{fs, sync::Arc, thread, time::Duration};
 
 use rfr::{
     chunked::{
-        self, from_path, Callsite, CallsiteId, ChunkedWriter, Meta, NewChunkedWriterError, Record,
-        RecordData,
+        self, Callsite, CallsiteId, ChunkedWriter, Meta, NewChunkedWriterError, Record, RecordData,
+        from_path,
     },
     common::{Event, FieldName, FieldValue, InstrumentationId, Kind, Level, Parent},
     rec::AbsTimestamp,
@@ -116,7 +116,9 @@ fn directory_already_exists() {
 
     match result.unwrap_err() {
         NewChunkedWriterError::AlreadyExists => {} // expected result
-        other_err => panic!("expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"),
+        other_err => panic!(
+            "expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"
+        ),
     }
 }
 
@@ -136,6 +138,8 @@ fn meta_already_exists() {
 
     match result.unwrap_err() {
         NewChunkedWriterError::AlreadyExists => {} // expected result
-        other_err => panic!("expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"),
+        other_err => panic!(
+            "expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"
+        ),
     }
 }

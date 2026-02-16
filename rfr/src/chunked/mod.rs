@@ -4,20 +4,20 @@ use std::{
     io::{self, SeekFrom},
     path::{Path, PathBuf},
     sync::{
-        atomic::{self, AtomicBool},
         Arc, Condvar, Mutex,
+        atomic::{self, AtomicBool},
     },
     time::{Duration, Instant},
 };
 
-use jiff::{tz::TimeZone, Timestamp, Zoned};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::{
+    FormatIdentifier, FormatVariant,
     common::{Span, Task},
     rec::{self, AbsTimestamp},
-    FormatIdentifier, FormatVariant,
 };
 
 mod callsite;
@@ -780,7 +780,9 @@ impl Chunk {
                         }
                         buffer.resize(new_size * 2, 0);
                         if let Err(err) = reader.seek(SeekFrom::Start(file_pos)) {
-                            println!("Could not seek back to start of element after making buffer bigger: {err}");
+                            println!(
+                                "Could not seek back to start of element after making buffer bigger: {err}"
+                            );
                             file_buffer = (&mut reader, buffer.as_mut_slice());
                             continue 'seq_chunk;
                         }
@@ -797,7 +799,7 @@ impl Chunk {
             };
 
             seq_chunks.push(seq_chunk_result.0);
-            file_buffer = (seq_chunk_result.1 .0, buffer.as_mut_slice());
+            file_buffer = (seq_chunk_result.1.0, buffer.as_mut_slice());
         }
 
         Ok(Self { header, seq_chunks })

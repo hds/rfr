@@ -1,6 +1,6 @@
 use std::{fmt, io, str::FromStr};
 
-use serde::{de::Visitor, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor};
 
 /// Represents the RFR format variant used to encode a file.
 ///
