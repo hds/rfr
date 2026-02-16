@@ -91,10 +91,10 @@ impl TaskRecords {
     }
 
     fn add_record(&mut self, record: Record) {
-        if self.records.is_empty() {
-            if let Data::TaskNew { .. } = &record.data {
-                self.start = record.timestamp.clone();
-            }
+        if self.records.is_empty()
+            && let Data::TaskNew { .. } = &record.data
+        {
+            self.start = record.timestamp.clone();
         }
         if let Data::TaskDrop { .. } = &record.data {
             self.end = Some(record.timestamp.clone());
@@ -364,21 +364,21 @@ pub(crate) fn collect_tasks(
 
                 // Handle TaskNew specially for spawn tracking
                 for (_, data) in &records_to_add {
-                    if let Data::TaskNew { iid } = data {
-                        if let Some(task) = tasks.get(iid) {
-                            if let Some(context) = &task.task.context {
-                                let spawn_record = Record {
-                                    timestamp: timestamp.clone(),
-                                    data: Data::Spawn {
-                                        spawned_iid: task.task.iid,
-                                        by_iid: *context,
-                                    },
-                                };
-                                tasks
-                                    .entry(*context)
-                                    .and_modify(|t| t.add_record(spawn_record));
-                            }
-                        }
+                    if let Data::TaskNew { iid } = data
+                        && let Some(task) = tasks.get(iid)
+                        && let Some(context) = &task.task.context
+                    {
+                        let spawn_record = Record {
+                            timestamp: timestamp.clone(),
+                            data: Data::Spawn {
+                                spawned_iid: task.task.iid,
+                                by_iid: *context,
+                            },
+                        };
+
+                        tasks
+                            .entry(*context)
+                            .and_modify(|t| t.add_record(spawn_record));
                     }
                 }
 

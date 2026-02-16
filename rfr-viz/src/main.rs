@@ -3,10 +3,10 @@ use std::error;
 use clap::{Parser, Subcommand};
 
 mod collect;
-mod gen;
+mod generate;
 mod ui;
 
-use crate::{gen::generate_html, ui::start_ui};
+use crate::{generate::generate_html, ui::start_ui};
 
 #[derive(Parser)]
 #[command(about, long_about = None)]
