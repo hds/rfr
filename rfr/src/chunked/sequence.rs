@@ -178,12 +178,11 @@ impl SeqChunkBuffer {
                 if !buffer.objects.contains_key(&waker.task_iid) {
                     missing_task_ids.push(waker.task_iid);
                 }
-                if let Some(context_task_id) = &waker.context {
-                    if context_task_id != &waker.task_iid
-                        && !buffer.objects.contains_key(context_task_id)
-                    {
-                        missing_task_ids.push(*context_task_id);
-                    }
+                if let Some(context_task_id) = &waker.context
+                    && context_task_id != &waker.task_iid
+                    && !buffer.objects.contains_key(context_task_id)
+                {
+                    missing_task_ids.push(*context_task_id);
                 }
             }
             RecordData::SpanNew { iid }

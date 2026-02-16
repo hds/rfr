@@ -1,8 +1,8 @@
 [package]
 name = "rfr-subscriber"
 version = "0.1.0"
-rust-version = "1.84"
-edition = "2021"
+rust-version = "1.93.1"
+edition = "2024"
 
 [dependencies]
 tracing = "0.1"
