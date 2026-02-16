@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use tracing::{span, subscriber::Interest, Event, Metadata, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing::{Event, Metadata, Subscriber, span, subscriber::Interest};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
     chunked::{self, ChunkedWriter},
@@ -16,8 +16,8 @@ use rfr::{
 };
 
 use crate::subscriber::common::{
-    get_context_task_iid, to_callsite, to_callsite_id, to_iid, EventKind, SpanKind, SpawnFields,
-    SpawnSpan, TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
+    EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
+    get_context_task_iid, to_callsite, to_callsite_id, to_iid,
 };
 
 struct WriterHandle {

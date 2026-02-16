@@ -1,8 +1,8 @@
 // TODO(hds): Write tests for meta file handling
 use rfr::{
+    FormatIdentifier, FormatVariant,
     chunked::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError},
     rec::AbsTimestamp,
-    FormatIdentifier, FormatVariant,
 };
 
 #[test]

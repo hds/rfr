@@ -9,8 +9,8 @@ use rfr::{
 use crate::{
     collect::{CollectedData, Data, DynamicId, SeqRecords, TaskRecords, WakeId, WakerAction},
     generated::{
-        track_descriptor, track_event, DebugAnnotation, ProcessDescriptor, Trace, TracePacket,
-        TrackDescriptor, TrackEvent,
+        DebugAnnotation, ProcessDescriptor, Trace, TracePacket, TrackDescriptor, TrackEvent,
+        track_descriptor, track_event,
     },
 };
 

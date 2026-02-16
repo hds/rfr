@@ -5,8 +5,9 @@ use rfr::{
     common::{Field, FieldName, FieldValue, InstrumentationId},
 };
 use tracing::{
+    Level, Metadata, Subscriber,
     field::{self, Visit},
-    span, Level, Metadata, Subscriber,
+    span,
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
@@ -57,7 +58,7 @@ impl TryFrom<&Metadata<'_>> for TraceKind {
                 _ => {
                     return Err(TryFromMetadataError {
                         desc: "span metadata isn't interesting",
-                    })
+                    });
                 }
             }
             .into())
@@ -70,7 +71,7 @@ impl TryFrom<&Metadata<'_>> for TraceKind {
                 _ => {
                     return Err(TryFromMetadataError {
                         desc: "event metadata isn't interesting",
-                    })
+                    });
                 }
             }
             .into())

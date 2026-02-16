@@ -8,9 +8,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    FormatIdentifier, FormatVariant,
     chunked::Callsite,
     common::{Event, InstrumentationId, Span, Task, Waker},
-    FormatIdentifier, FormatVariant,
 };
 
 fn current_software_version() -> FormatIdentifier {
@@ -250,7 +250,9 @@ pub fn from_file(filename: String) -> Vec<Record> {
                     }
                     buffer_vec.resize(new_size * 2, 0);
                     if let Err(err) = file.seek(SeekFrom::Start(file_pos)) {
-                        println!("Could not seek back to start of element after making buffer bigger: {err}");
+                        println!(
+                            "Could not seek back to start of element after making buffer bigger: {err}"
+                        );
                         file_buffer = (&mut file, &mut buffer_vec as &mut [u8]);
                         continue 'record;
                     }
@@ -265,7 +267,7 @@ pub fn from_file(filename: String) -> Vec<Record> {
         };
 
         records.push(result.0);
-        file_buffer = (result.1 .0, &mut buffer_vec as &mut [u8]);
+        file_buffer = (result.1.0, &mut buffer_vec as &mut [u8]);
     }
 
     records

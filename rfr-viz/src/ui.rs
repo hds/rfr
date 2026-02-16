@@ -5,8 +5,8 @@ use egui_extras::StripBuilder;
 use rfr::{common::TaskKind, rec};
 
 use crate::collect::{
-    chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnRecordKind, TaskIndex,
-    TaskRow, TaskSection, TaskState, WakeRecordKind,
+    RecordingInfo, SpawnRecordKind, TaskIndex, TaskRow, TaskSection, TaskState, WakeRecordKind,
+    chunked_recording_info, streaming_recording_info,
 };
 
 static TASK_ROW_HEIGHT: f32 = 42.;

@@ -8,7 +8,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{identifier::ReadFormatIdentifierError, rec, FormatIdentifier, FormatVariant};
+use crate::{FormatIdentifier, FormatVariant, identifier::ReadFormatIdentifierError, rec};
 
 /// The format identifier for the Meta file
 pub fn version() -> FormatIdentifier {

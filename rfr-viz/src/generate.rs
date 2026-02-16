@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fs, io};
 use rfr::common::TaskKind;
 
 use crate::collect::{
-    self, chunked_recording_info, streaming_recording_info, RecordingInfo, SpawnRecordKind,
+    self, RecordingInfo, SpawnRecordKind, chunked_recording_info, streaming_recording_info,
 };
 
 pub(crate) fn generate_html(recording_file: String, name: String) {
