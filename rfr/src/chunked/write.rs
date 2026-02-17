@@ -15,8 +15,8 @@ use crate::chunked::{
     AbsTimestampSecs, ChunkedCallsitesWriter, ChunkedMeta, current_software_version,
 };
 use crate::{
+    AbsTimestamp,
     chunked::{Callsite, ChunkHeader, ChunkInterval, SeqChunkBuffer},
-    rec::{self, AbsTimestamp},
 };
 
 #[derive(Debug)]
@@ -42,7 +42,7 @@ impl ChunkedWriter {
     {
         let root_dir = root_dir.as_ref();
 
-        let timestamp = rec::AbsTimestamp::now();
+        let timestamp = AbsTimestamp::now();
         let base_time = AbsTimestampSecs::from(timestamp.clone());
         let meta = ChunkedMeta::new(vec![current_software_version()]);
 
@@ -163,7 +163,7 @@ impl ChunkedWriter {
     fn current_seq_chunk_buffer<'a>(
         &self,
         local_buffer: &'a mut Option<Arc<SeqChunkBuffer>>,
-        timestamp: rec::AbsTimestamp,
+        timestamp: AbsTimestamp,
     ) -> &'a Arc<SeqChunkBuffer> {
         let interval = ChunkInterval::from_timestamp_and_period(
             timestamp.clone(),

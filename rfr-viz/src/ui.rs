@@ -2,11 +2,11 @@ use std::{collections::HashMap, fs};
 
 use eframe::{egui, epaint};
 use egui_extras::StripBuilder;
-use rfr::{common::TaskKind, rec};
+use rfr::common::TaskKind;
 
 use crate::collect::{
     RecordingInfo, SpawnRecordKind, TaskIndex, TaskRow, TaskSection, TaskState, WakeRecordKind,
-    chunked_recording_info, streaming_recording_info,
+    WinTimestamp, chunked_recording_info, streaming_recording_info,
 };
 
 static TASK_ROW_HEIGHT: f32 = 42.;
@@ -298,7 +298,7 @@ fn time_bar(ui: &mut egui::Ui, state: &State) -> egui::Response {
 fn task_row(
     ui: &mut egui::Ui,
     state: &State,
-    end_time: rec::WinTimestamp,
+    end_time: WinTimestamp,
     task_row: &TaskRow,
 ) -> egui::Response {
     let total_width = task_row.start_time.micros as f32 + task_row.total_duration() as f32;

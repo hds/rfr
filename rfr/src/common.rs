@@ -1,6 +1,64 @@
+use std::{
+    cmp::Ordering,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use serde::{Deserialize, Serialize};
 
 use crate::chunked::CallsiteId;
+
+/// A timestamp measured from the [`UNIX_EPOCH`].
+///
+/// This timestamp is absolute as it has an external reference.
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Deserialize, Serialize)]
+pub struct AbsTimestamp {
+    /// Whole seconds component of the timestamp, measured from the [`UNIX_EPOCH`].
+    pub secs: u64,
+    /// Sub-second component of the timestamp, measured in microseconds.
+    pub subsec_micros: u32,
+}
+
+impl Ord for AbsTimestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.secs.cmp(&other.secs) {
+            Ordering::Equal => self.subsec_micros.cmp(&other.subsec_micros),
+            other => other,
+        }
+    }
+}
+
+impl PartialOrd for AbsTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl From<Duration> for AbsTimestamp {
+    fn from(value: Duration) -> Self {
+        Self {
+            secs: value.as_secs(),
+            subsec_micros: value.subsec_micros(),
+        }
+    }
+}
+
+impl AbsTimestamp {
+    /// Earliest measurable time
+    pub const EARLIEST: Self = Self {
+        secs: 0,
+        subsec_micros: 1,
+    };
+
+    /// Get an absolute timestamp representing the current time.
+    pub fn now() -> Self {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().into()
+    }
+
+    /// Return the [`Duration`] since the UNIX epoch represented by this absolute timestamp.
+    pub fn as_duration_since_epoch(&self) -> Duration {
+        Duration::new(self.secs, self.subsec_micros * 1_000)
+    }
+}
 
 /// The level of a span or event.
 ///

@@ -8,7 +8,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FormatIdentifier, FormatVariant, identifier::ReadFormatIdentifierError, rec};
+use crate::{AbsTimestamp, FormatIdentifier, FormatVariant, identifier::ReadFormatIdentifierError};
 
 /// The format identifier for the Meta file
 pub fn version() -> FormatIdentifier {
@@ -58,7 +58,7 @@ impl ChunkedMeta {
         Self {
             format_identifier: version(),
             header: ChunkedMetaHeader {
-                created_time: rec::AbsTimestamp::now(),
+                created_time: AbsTimestamp::now(),
                 format_identifiers,
             },
         }
@@ -124,7 +124,7 @@ pub enum MetaTryFromIoError {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChunkedMetaHeader {
     /// The time that this recording was created
-    pub created_time: rec::AbsTimestamp,
+    pub created_time: AbsTimestamp,
 
     /// All the format identifiers used in this chunked recording
     ///

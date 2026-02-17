@@ -10,9 +10,9 @@ use tracing::{Event, Metadata, Subscriber, span, subscriber::Interest};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
+    AbsTimestamp,
     chunked::{self, ChunkedWriter},
     common::{self, InstrumentationId},
-    rec::{self, AbsTimestamp},
 };
 
 use crate::subscriber::common::{
@@ -128,7 +128,7 @@ impl RfrChunkedLayer {
             .collect()
     }
 
-    fn write_record(&self, timestamp: rec::AbsTimestamp, data: chunked::RecordData) {
+    fn write_record(&self, timestamp: AbsTimestamp, data: chunked::RecordData) {
         self.writer_handle
             .writer
             .with_seq_chunk_buffer(timestamp.clone(), |current_buffer| {

@@ -1,27 +1,51 @@
 use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
 
 use rfr::{
+    AbsTimestamp,
     chunked::{self, RecordData},
     common::{InstrumentationId, Task},
-    rec::{self, AbsTimestamp, WinTimestamp, from_file},
+    streamed,
 };
 
-pub(crate) struct WinTimeHandle {
-    start_time: rec::AbsTimestamp,
+/// A timestamp measured from the beginning of the [recording window].
+///
+/// This timestamp is relative to a specific window.
+///
+/// [recording window]: http://need-docs-on-the-recording-window.net/
+#[derive(Debug, Clone)]
+pub(crate) struct WinTimestamp {
+    /// The total number of microseconds since the beginning of the window.
+    pub(crate) micros: u64,
 }
 
-fn duration_from_abs_timestamp(abs_time: &rec::AbsTimestamp) -> Duration {
+impl WinTimestamp {
+    pub(crate) const ZERO: Self = Self { micros: 0 };
+
+    pub(crate) fn as_micros(&self) -> u64 {
+        self.micros
+    }
+
+    pub(crate) fn as_nanos(&self) -> u64 {
+        self.micros * 1_000
+    }
+}
+
+pub(crate) struct WinTimeHandle {
+    start_time: AbsTimestamp,
+}
+
+fn duration_from_abs_timestamp(abs_time: &AbsTimestamp) -> Duration {
     Duration::new(abs_time.secs, abs_time.subsec_micros * 1000)
 }
 
 impl WinTimeHandle {
-    pub(crate) fn new(recording_start_time: rec::AbsTimestamp) -> Self {
+    pub(crate) fn new(recording_start_time: AbsTimestamp) -> Self {
         Self {
             start_time: recording_start_time,
         }
     }
 
-    pub(crate) fn window_time(&self, abs_time: &rec::AbsTimestamp) -> rec::WinTimestamp {
+    pub(crate) fn window_time(&self, abs_time: &AbsTimestamp) -> WinTimestamp {
         let start_time = duration_from_abs_timestamp(&self.start_time);
         let duration = Duration::new(abs_time.secs, abs_time.subsec_micros * 1000);
         let window_micros = duration.saturating_sub(start_time).as_micros();
@@ -30,24 +54,24 @@ impl WinTimeHandle {
             "recording time spans more than u64::MAX microseconds, which is more than 500 thousand years"
         );
 
-        rec::WinTimestamp {
+        WinTimestamp {
             micros: window_micros as u64,
         }
     }
 }
 
 struct TaskTimeHandle {
-    start_time: rec::WinTimestamp,
+    start_time: WinTimestamp,
 }
 
 impl TaskTimeHandle {
-    fn new(task_start_time: rec::WinTimestamp) -> Self {
+    fn new(task_start_time: WinTimestamp) -> Self {
         Self {
             start_time: task_start_time,
         }
     }
 
-    fn task_time(&self, win_time: &rec::WinTimestamp) -> TaskTimestamp {
+    fn task_time(&self, win_time: &WinTimestamp) -> TaskTimestamp {
         TaskTimestamp {
             micros: win_time.micros.saturating_sub(self.start_time.micros),
         }
@@ -69,7 +93,7 @@ impl TaskTimestamp {
     }
 }
 
-impl Add<TaskTimestamp> for rec::WinTimestamp {
+impl Add<TaskTimestamp> for WinTimestamp {
     type Output = Self;
 
     fn add(self, rhs: TaskTimestamp) -> Self::Output {
@@ -84,7 +108,7 @@ pub(crate) struct RecordingInfo {
     // We will use this to print timestamps
     #[allow(dead_code)]
     pub(crate) win_time_handle: WinTimeHandle,
-    pub(crate) end_time: rec::WinTimestamp,
+    pub(crate) end_time: WinTimestamp,
 }
 
 #[derive(Debug)]
@@ -115,7 +139,7 @@ trait TaskRecordsCollect {
     fn latest_timestamp(&mut self) -> Option<AbsTimestamp>;
 }
 
-impl TaskRecordsCollect for Vec<rec::Record> {
+impl TaskRecordsCollect for Vec<streamed::Record> {
     fn collect_into_tasks(&mut self) -> Vec<TaskRecords> {
         if self.is_empty() {
             return vec![];
@@ -153,7 +177,7 @@ impl TaskRecordsCollect for chunked::Recording {
 }
 
 pub(crate) fn streaming_recording_info(path: String) -> Option<RecordingInfo> {
-    let records = from_file(path);
+    let records = streamed::from_file(path);
 
     create_recording_info(records)
 }
@@ -264,55 +288,57 @@ pub(crate) fn collect_into_tasks_from_chunked_recording(
 }
 
 pub(crate) fn collect_into_tasks_from_streaming_records(
-    records: &Vec<rec::Record>,
+    records: &Vec<streamed::Record>,
 ) -> Vec<TaskRecords> {
     let mut tasks = HashMap::new();
 
     for record in records {
-        if let rec::RecordData::End = &record.data {
+        if let streamed::RecordData::End = &record.data {
             // This should be the end of the list of records.
             // FIXME: Break?
-        } else if let rec::RecordData::Callsite { callsite } = &record.data {
+        } else if let streamed::RecordData::Callsite { callsite } = &record.data {
             // TODO: Do something with the Callsite to support Spans and Events.
             _ = callsite;
-        } else if let rec::RecordData::Task { task } = &record.data {
+        } else if let streamed::RecordData::Task { task } = &record.data {
             let task_entry = TaskRecords::new(task.clone());
             tasks.insert(task.iid, task_entry);
         } else {
             let (record_data, iid) = match &record.data {
-                rec::RecordData::TaskNew { iid } => (RecordData::TaskNew { iid: *iid }, *iid),
-                rec::RecordData::TaskPollStart { iid } => {
+                streamed::RecordData::TaskNew { iid } => (RecordData::TaskNew { iid: *iid }, *iid),
+                streamed::RecordData::TaskPollStart { iid } => {
                     (RecordData::TaskPollStart { iid: *iid }, *iid)
                 }
-                rec::RecordData::TaskPollEnd { iid } => {
+                streamed::RecordData::TaskPollEnd { iid } => {
                     (RecordData::TaskPollEnd { iid: *iid }, *iid)
                 }
-                rec::RecordData::TaskDrop { iid } => (RecordData::TaskDrop { iid: *iid }, *iid),
-                rec::RecordData::WakerWake { waker } => (
+                streamed::RecordData::TaskDrop { iid } => {
+                    (RecordData::TaskDrop { iid: *iid }, *iid)
+                }
+                streamed::RecordData::WakerWake { waker } => (
                     RecordData::WakerWake {
                         waker: waker.clone(),
                     },
                     waker.task_iid,
                 ),
-                rec::RecordData::WakerWakeByRef { waker } => (
+                streamed::RecordData::WakerWakeByRef { waker } => (
                     RecordData::WakerWakeByRef {
                         waker: waker.clone(),
                     },
                     waker.task_iid,
                 ),
-                rec::RecordData::WakerClone { waker } => (
+                streamed::RecordData::WakerClone { waker } => (
                     RecordData::WakerClone {
                         waker: waker.clone(),
                     },
                     waker.task_iid,
                 ),
-                rec::RecordData::WakerDrop { waker } => (
+                streamed::RecordData::WakerDrop { waker } => (
                     RecordData::WakerDrop {
                         waker: waker.clone(),
                     },
                     waker.task_iid,
                 ),
-                rec::RecordData::Task { task: _ } => {
+                streamed::RecordData::Task { task: _ } => {
                     unreachable!("task records have already been filtered out")
                 }
                 _ => {
@@ -332,7 +358,7 @@ pub(crate) fn collect_into_tasks_from_streaming_records(
 
 pub(crate) struct TaskRow {
     pub(crate) index: TaskIndex,
-    pub(crate) start_time: rec::WinTimestamp,
+    pub(crate) start_time: WinTimestamp,
     pub(crate) task: Task,
     pub(crate) sections: Vec<TaskSection>,
     pub(crate) last_state: Option<TaskState>,
@@ -498,7 +524,7 @@ pub(crate) fn collect_into_rows(
         } else {
             // The task started before this window, so we set the task time to start with
             // the window.
-            rec::WinTimestamp::ZERO
+            WinTimestamp::ZERO
         };
         let task_time_handle = TaskTimeHandle::new(start_time.clone());
 

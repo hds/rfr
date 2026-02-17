@@ -1,9 +1,9 @@
 use std::{collections::HashMap, convert::identity};
 
 use rfr::{
+    AbsTimestamp,
     chunked::{self, RecordData, SeqChunkHeader, SeqId},
     common::{InstrumentationId, Task, Waker},
-    rec::AbsTimestamp,
 };
 
 /// Data collected for conversion
