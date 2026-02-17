@@ -10,9 +10,8 @@ use tracing::{Event, Metadata, Subscriber, span, subscriber::Interest};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
-    AbsTimestamp,
+    AbsTimestamp, InstrumentationId,
     chunked::{self, ChunkedWriter},
-    common::{self, InstrumentationId},
 };
 
 use crate::subscriber::common::{
@@ -212,18 +211,18 @@ where
                     extensions.insert(spawn.task_id);
                 }
                 {
-                    let task_id = common::TaskId::from(spawn.task_id.0);
-                    let task = chunked::Object::Task(common::Task {
+                    let task_id = rfr::TaskId::from(spawn.task_id.0);
+                    let task = chunked::Object::Task(rfr::Task {
                         iid: spawn.iid,
                         callsite_id: spawn.callsite_id,
                         task_id,
                         task_name: spawn.task_name,
                         task_kind: match spawn.task_kind {
-                            TaskKind::Task => common::TaskKind::Task,
-                            TaskKind::Local => common::TaskKind::Local,
-                            TaskKind::Blocking => common::TaskKind::Blocking,
-                            TaskKind::BlockOn => common::TaskKind::BlockOn,
-                            TaskKind::Other(val) => common::TaskKind::Other(val),
+                            TaskKind::Task => rfr::TaskKind::Task,
+                            TaskKind::Local => rfr::TaskKind::Local,
+                            TaskKind::Blocking => rfr::TaskKind::Blocking,
+                            TaskKind::BlockOn => rfr::TaskKind::BlockOn,
+                            TaskKind::Other(val) => rfr::TaskKind::Other(val),
                         },
 
                         context: spawn.context,
@@ -260,7 +259,7 @@ where
                 let task_span_id = fields.task_span_id.unwrap();
 
                 {
-                    let waker = common::Waker {
+                    let waker = rfr::Waker {
                         task_iid: to_iid(&task_span_id),
                         context: ctx.current_span().id().map(to_iid),
                     };

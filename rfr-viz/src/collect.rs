@@ -1,9 +1,8 @@
 use std::{collections::HashMap, convert::identity, fmt, ops::Add, time::Duration};
 
 use rfr::{
-    AbsTimestamp,
+    AbsTimestamp, InstrumentationId, Task,
     chunked::{self, RecordData},
-    common::{InstrumentationId, Task},
     streamed,
 };
 

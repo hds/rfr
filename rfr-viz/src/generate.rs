@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, fs, io};
 
-use rfr::common::TaskKind;
+use rfr::TaskKind;
 
 use crate::collect::{
     self, RecordingInfo, SpawnRecordKind, chunked_recording_info, streaming_recording_info,
