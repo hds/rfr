@@ -1,6 +1,6 @@
 use rfr::{
+    Kind, Level,
     chunked::{Callsite, CallsiteId, ChunkedCallsites, ChunkedCallsitesWriter},
-    common::{Kind, Level},
 };
 
 #[test]

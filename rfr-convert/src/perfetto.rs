@@ -1,10 +1,7 @@
 use std::{fmt, fs, io::Write, mem};
 
 use prost::Message;
-use rfr::{
-    AbsTimestamp,
-    common::{TaskKind, Waker},
-};
+use rfr::{AbsTimestamp, TaskKind, Waker};
 
 use crate::{
     collect::{CollectedData, Data, DynamicId, SeqRecords, TaskRecords, WakeId, WakerAction},

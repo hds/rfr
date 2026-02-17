@@ -1,8 +1,8 @@
 use std::{error, fmt, ptr};
 
 use rfr::{
+    Field, FieldName, FieldValue, InstrumentationId,
     chunked::{Callsite, CallsiteId},
-    common::{Field, FieldName, FieldValue, InstrumentationId},
 };
 use tracing::{
     Level, Metadata, Subscriber,
@@ -130,7 +130,7 @@ pub(super) fn to_callsite(metadata: &Metadata<'_>) -> Callsite {
     }
     Callsite {
         callsite_id: to_callsite_id(metadata),
-        level: rfr::common::Level(match *metadata.level() {
+        level: rfr::Level(match *metadata.level() {
             Level::ERROR => 50,
             Level::WARN => 40,
             Level::INFO => 30,
@@ -138,9 +138,9 @@ pub(super) fn to_callsite(metadata: &Metadata<'_>) -> Callsite {
             Level::TRACE => 10,
         }),
         kind: if metadata.is_span() {
-            rfr::common::Kind::Span
+            rfr::Kind::Span
         } else {
-            rfr::common::Kind::Event
+            rfr::Kind::Event
         },
         const_fields,
         split_field_names,

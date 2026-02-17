@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs};
 
 use eframe::{egui, epaint};
 use egui_extras::StripBuilder;
-use rfr::common::TaskKind;
+use rfr::TaskKind;
 
 use crate::collect::{
     RecordingInfo, SpawnRecordKind, TaskIndex, TaskRow, TaskSection, TaskState, WakeRecordKind,
