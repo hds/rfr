@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    FormatIdentifier, FormatVariant,
+    AbsTimestamp, FormatIdentifier, FormatVariant,
     common::{Span, Task},
-    rec::{self, AbsTimestamp},
 };
 
 mod callsite;
@@ -41,8 +40,8 @@ pub struct AbsTimestampSecs {
     pub secs: u64,
 }
 
-impl From<rec::AbsTimestamp> for AbsTimestampSecs {
-    fn from(value: rec::AbsTimestamp) -> Self {
+impl From<AbsTimestamp> for AbsTimestampSecs {
+    fn from(value: AbsTimestamp) -> Self {
         Self { secs: value.secs }
     }
 }
@@ -78,7 +77,7 @@ impl ChunkTimestamp {
     /// # Examples
     ///
     /// ```
-    /// # use rfr::{chunked::{AbsTimestampSecs, ChunkTimestamp}, rec::AbsTimestamp};
+    /// # use rfr::{AbsTimestamp, chunked::{AbsTimestampSecs, ChunkTimestamp}};
     /// #
     /// let now = AbsTimestamp::now();
     /// let base_time = AbsTimestampSecs::from(now.clone());
@@ -98,7 +97,7 @@ impl ChunkTimestamp {
     /// # Examples
     ///
     /// ```
-    /// # use rfr::{chunked::{AbsTimestampSecs, ChunkTimestamp}, rec::AbsTimestamp};
+    /// # use rfr::{AbsTimestamp, chunked::{AbsTimestampSecs, ChunkTimestamp}};
     /// #
     /// # let now = AbsTimestamp::now();
     /// # let base_time = AbsTimestampSecs::from(now.clone());
@@ -213,7 +212,7 @@ impl ChunkInterval {
     /// # Examples
     ///
     /// ```
-    /// # use rfr::{chunked::ChunkInterval, rec::AbsTimestamp};
+    /// # use rfr::{AbsTimestamp, chunked::ChunkInterval};
     /// let now = AbsTimestamp::now();
     /// let interval = ChunkInterval::from_timestamp_and_period(now.clone(), 1_000_000);
     ///
@@ -229,7 +228,7 @@ impl ChunkInterval {
     /// # Examples
     ///
     /// ```
-    /// # use rfr::{chunked::ChunkInterval, rec::AbsTimestamp};
+    /// # use rfr::{AbsTimestamp, chunked::ChunkInterval};
     /// let now = AbsTimestamp::now();
     /// let interval = ChunkInterval::from_timestamp_and_period(now.clone(), 1_000_000);
     ///

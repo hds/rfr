@@ -1,6 +1,7 @@
 pub mod chunked;
 pub mod common;
 mod identifier;
-pub mod rec;
+pub mod streamed;
 
+pub use common::AbsTimestamp;
 pub use identifier::{FormatIdentifier, FormatVariant, ParseFormatVersionError};

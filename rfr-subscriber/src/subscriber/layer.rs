@@ -10,7 +10,7 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 use rfr::{
     chunked::CallsiteId,
     common,
-    rec::{self, StreamWriter},
+    streamed::{Meta, Record, RecordData, StreamWriter},
 };
 
 use crate::subscriber::common::{
@@ -83,7 +83,7 @@ where
     }
 
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let rec_meta = Meta::now();
         let callsite_id = to_callsite_id(attrs.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
@@ -113,7 +113,7 @@ where
                 {
                     let mut guard = self.writer.lock().unwrap();
                     let task_id = common::TaskId::from(spawn.task_id.0);
-                    let task_data = rec::RecordData::Task {
+                    let task_data = RecordData::Task {
                         task: common::Task {
                             iid: spawn.iid,
                             callsite_id: spawn.callsite_id,
@@ -130,10 +130,10 @@ where
                             context: spawn.context,
                         },
                     };
-                    let task_new = rec::RecordData::TaskNew { iid: spawn.iid };
+                    let task_new = RecordData::TaskNew { iid: spawn.iid };
 
-                    (*guard).write_record(rec::Record::new(rec_meta.clone(), task_data));
-                    (*guard).write_record(rec::Record::new(rec_meta, task_new));
+                    (*guard).write_record(Record::new(rec_meta.clone(), task_data));
+                    (*guard).write_record(Record::new(rec_meta, task_new));
                 }
             }
             _ => {
@@ -143,7 +143,7 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let rec_meta = Meta::now();
         let callsite_id = to_callsite_id(event.metadata());
         let kind = {
             let callsite_cache = self.callsite_cache.lock().expect("callsite cache poisoned");
@@ -168,13 +168,13 @@ where
                     context: ctx.current_span().id().map(to_iid),
                 };
                 let waker_data = match op {
-                    WakerOp::Wake => rec::RecordData::WakerWake { waker },
-                    WakerOp::WakeByRef => rec::RecordData::WakerWakeByRef { waker },
-                    WakerOp::Clone => rec::RecordData::WakerClone { waker },
-                    WakerOp::Drop => rec::RecordData::WakerDrop { waker },
+                    WakerOp::Wake => RecordData::WakerWake { waker },
+                    WakerOp::WakeByRef => RecordData::WakerWakeByRef { waker },
+                    WakerOp::Clone => RecordData::WakerClone { waker },
+                    WakerOp::Drop => RecordData::WakerDrop { waker },
                 };
 
-                (*guard).write_record(rec::Record::new(rec_meta, waker_data));
+                (*guard).write_record(Record::new(rec_meta, waker_data));
             }
             _ => {
                 // Not yet implemented
@@ -183,33 +183,33 @@ where
     }
 
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let rec_meta = Meta::now();
         let span = ctx.span(id).expect("enter {id:?} not found, this is a bug");
         let extensions = span.extensions();
         if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
             let mut guard = self.writer.lock().unwrap();
-            let poll_start = rec::RecordData::TaskPollStart { iid: to_iid(id) };
+            let poll_start = RecordData::TaskPollStart { iid: to_iid(id) };
 
-            guard.write_record(rec::Record::new(rec_meta, poll_start));
+            guard.write_record(Record::new(rec_meta, poll_start));
         }
     }
 
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let rec_meta = Meta::now();
         let span = ctx.span(id).expect("exit {id:?} not found, this is a bug");
         let extensions = span.extensions();
         if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
             let mut guard = self.writer.lock().unwrap();
-            let poll_end = rec::RecordData::TaskPollEnd { iid: to_iid(id) };
+            let poll_end = RecordData::TaskPollEnd { iid: to_iid(id) };
 
-            (*guard).write_record(rec::Record::new(rec_meta, poll_end));
+            (*guard).write_record(Record::new(rec_meta, poll_end));
         }
     }
 
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
-        let rec_meta = rec::Meta::now();
+        let rec_meta = Meta::now();
         let span = ctx
             .span(&id)
             .expect("close {id:?} not found, this is a bug");
@@ -217,9 +217,9 @@ where
         if extensions.get::<TaskId>().is_some() {
             // This is a runtime.spawn span
             let mut guard = self.writer.lock().unwrap();
-            let task_drop = rec::RecordData::TaskDrop { iid: to_iid(&id) };
+            let task_drop = RecordData::TaskDrop { iid: to_iid(&id) };
 
-            (*guard).write_record(rec::Record::new(rec_meta, task_drop));
+            (*guard).write_record(Record::new(rec_meta, task_drop));
         }
     }
 }

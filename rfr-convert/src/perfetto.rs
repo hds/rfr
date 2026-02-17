@@ -2,8 +2,8 @@ use std::{fmt, fs, io::Write, mem};
 
 use prost::Message;
 use rfr::{
+    AbsTimestamp,
     common::{TaskKind, Waker},
-    rec::AbsTimestamp,
 };
 
 use crate::{

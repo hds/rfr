@@ -1,6 +1,6 @@
 use std::env;
 
-use rfr::rec::from_file;
+use rfr::streamed;
 
 fn main() {
     let mut args = env::args();
@@ -9,7 +9,7 @@ fn main() {
         return;
     };
 
-    let records = from_file(filename);
+    let records = streamed::from_file(filename);
     for (idx, record) in records.iter().enumerate() {
         println!("{idx}: {record:?}");
     }

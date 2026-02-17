@@ -1,9 +1,9 @@
 use rfr::{
+    AbsTimestamp,
     chunked::{
         CallsiteId, ChunkInterval, Meta, Object, Record, RecordData, SeqChunk, SeqChunkBuffer,
     },
     common::{InstrumentationId, Task, TaskKind},
-    rec::AbsTimestamp,
 };
 
 #[test]
