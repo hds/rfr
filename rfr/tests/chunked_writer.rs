@@ -1,11 +1,9 @@
 use std::{fs, sync::Arc, thread, time::Duration};
 
 use rfr::{
-    AbsTimestamp, Event, FieldName, FieldValue, InstrumentationId, Kind, Level, Parent,
-    chunked::{
-        self, Callsite, CallsiteId, ChunkedWriter, Meta, NewChunkedWriterError, Record, RecordData,
-        from_path,
-    },
+    AbsTimestamp, Callsite, CallsiteId, Event, FieldName, FieldValue, InstrumentationId, Kind,
+    Level, Parent,
+    chunked::{self, ChunkedWriter, Meta, NewChunkedWriterError, Record, RecordData, from_path},
 };
 use tempfile::tempdir;
 

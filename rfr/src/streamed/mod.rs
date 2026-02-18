@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AbsTimestamp, FormatIdentifier, FormatVariant,
-    chunked::Callsite,
-    common::{Event, InstrumentationId, Span, Task, Waker},
+    AbsTimestamp, Callsite, Event, FormatIdentifier, FormatVariant, InstrumentationId, Span, Task,
+    Waker,
 };
 
 mod read;

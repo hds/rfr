@@ -8,7 +8,7 @@ use tracing::{Dispatch, Event, Metadata, Subscriber, span, subscriber::Interest}
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
-    chunked::CallsiteId,
+    CallsiteId,
     streamed::{Meta, Record, RecordData, StreamWriter},
 };
 

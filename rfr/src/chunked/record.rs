@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    chunked::ChunkTimestamp,
-    common::{Event, InstrumentationId, Waker},
-};
+use crate::{Event, InstrumentationId, Waker, chunked::ChunkTimestamp};
 
 /// A record containing timing metadata and record data.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

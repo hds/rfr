@@ -6,11 +6,9 @@
 
 use std::{error, fmt, io};
 
-use serde::{Deserialize, Serialize};
-
 use crate::{
+    Callsite,
     chunked::WriteError,
-    common::{Field, FieldName, Kind, Level},
     identifier::{FormatIdentifier, FormatVariant, ReadFormatIdentifierError},
 };
 
@@ -21,37 +19,6 @@ pub fn version() -> FormatIdentifier {
         major: 0,
         minor: 0,
         patch: 1,
-    }
-}
-
-/// An instrumented location in an application
-///
-/// A callsite contains all the const data for a specific location in the application where
-/// instrumentation is emitted from.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Callsite {
-    pub callsite_id: CallsiteId,
-    pub level: Level,
-    pub kind: Kind,
-    pub const_fields: Vec<Field>,
-    pub split_field_names: Vec<FieldName>,
-}
-
-/// The callsite Id defines a unique callsite.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-pub struct CallsiteId(u64);
-
-impl From<u64> for CallsiteId {
-    /// Create a CallsiteId from a `u64` value.
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl CallsiteId {
-    /// The `u64` representation of the callsite Id.
-    pub fn as_u64(&self) -> u64 {
-        self.0
     }
 }
 
