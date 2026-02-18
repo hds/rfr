@@ -10,7 +10,7 @@ use tracing::{Event, Metadata, Subscriber, span, subscriber::Interest};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use rfr::{
-    AbsTimestamp, InstrumentationId,
+    AbsTimestamp, Callsite, CallsiteId, InstrumentationId,
     chunked::{self, ChunkedWriter},
 };
 
@@ -59,7 +59,7 @@ impl error::Error for FlushError {}
 
 pub struct RfrChunkedLayer {
     writer_handle: WriterHandle,
-    callsite_cache: Mutex<HashMap<chunked::CallsiteId, (chunked::Callsite, TraceKind)>>,
+    callsite_cache: Mutex<HashMap<CallsiteId, (Callsite, TraceKind)>>,
     object_cache: Mutex<HashMap<InstrumentationId, chunked::Object>>,
 }
 

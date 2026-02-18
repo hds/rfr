@@ -1,9 +1,6 @@
 use std::{error, fmt, ptr};
 
-use rfr::{
-    Field, FieldName, FieldValue, InstrumentationId,
-    chunked::{Callsite, CallsiteId},
-};
+use rfr::{Callsite, CallsiteId, Field, FieldName, FieldValue, InstrumentationId};
 use tracing::{
     Level, Metadata, Subscriber,
     field::{self, Visit},

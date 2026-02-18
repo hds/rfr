@@ -1,8 +1,10 @@
+mod callsite;
 pub mod chunked;
 mod common;
 mod identifier;
 pub mod streamed;
 
+pub use callsite::{Callsite, CallsiteId};
 pub use common::{
     AbsTimestamp, Event, Field, FieldName, FieldValue, InstrumentationId, Kind, Level, Parent,
     Span, Task, TaskId, TaskKind, Waker,

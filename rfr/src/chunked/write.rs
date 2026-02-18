@@ -15,8 +15,8 @@ use crate::chunked::{
     AbsTimestampSecs, ChunkedCallsitesWriter, ChunkedMeta, current_software_version,
 };
 use crate::{
-    AbsTimestamp,
-    chunked::{Callsite, ChunkHeader, ChunkInterval, SeqChunkBuffer},
+    AbsTimestamp, Callsite,
+    chunked::{ChunkHeader, ChunkInterval, SeqChunkBuffer},
 };
 
 #[derive(Debug)]

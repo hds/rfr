@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AbsTimestamp, FormatIdentifier, FormatVariant,
-    common::{Span, Task},
-};
+use crate::{AbsTimestamp, FormatIdentifier, FormatVariant, Span, Task};
 
 mod callsite;
 mod meta;
@@ -12,9 +9,7 @@ mod record;
 mod sequence;
 mod write;
 
-pub use callsite::{
-    Callsite, CallsiteId, ChunkedCallsites, ChunkedCallsitesWriter, FlushCallsitesError,
-};
+pub use callsite::{ChunkedCallsites, ChunkedCallsitesWriter, FlushCallsitesError};
 pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use read::{Recording, from_path};
 pub use record::{Meta, Record, RecordData};

@@ -20,9 +20,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AbsTimestamp,
+    AbsTimestamp, InstrumentationId,
     chunked::{AbsTimestampSecs, ChunkInterval, ChunkTimestamp, Object, Record, RecordData},
-    common::InstrumentationId,
 };
 
 /// Sequence chunk

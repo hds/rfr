@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::chunked::CallsiteId;
+use crate::CallsiteId;
 
 /// A timestamp measured from the [`UNIX_EPOCH`].
 ///
