@@ -2,10 +2,10 @@ use std::{future::Future, task::Poll, time::Duration};
 
 use tracing_subscriber::prelude::*;
 
-use rfr_subscriber::RfrChunkedLayer;
+use rfr_subscriber::ChunkedLayer;
 
 fn main() {
-    let rfr_layer = RfrChunkedLayer::new("./chunked-long.rfr");
+    let rfr_layer = ChunkedLayer::new("./chunked-long.rfr");
     let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 

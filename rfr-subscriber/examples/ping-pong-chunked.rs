@@ -2,11 +2,11 @@ use std::future::Future;
 
 use tokio::sync::mpsc;
 
-use rfr_subscriber::RfrChunkedLayer;
+use rfr_subscriber::ChunkedLayer;
 use tracing_subscriber::prelude::*;
 
 fn main() {
-    let rfr_layer = RfrChunkedLayer::new("./chunked-ping-pong.rfr");
+    let rfr_layer = ChunkedLayer::new("./chunked-ping-pong.rfr");
     let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 
