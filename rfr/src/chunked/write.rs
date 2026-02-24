@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::VecDeque,
     error, fmt, fs, io,
     path::{Path, PathBuf},
     sync::{
@@ -28,15 +29,126 @@ pub struct ChunkedWriter {
     /// seconds (multiple of 1_000_000) or a divisor of a whole second (divisor of 1_000_000).
     chunk_period_micros: u32,
 
+    /// Configuration for how many chunks to keep.
+    storage_quota: StorageQuota,
+
     closed: AtomicBool,
 
+    chunks: Mutex<Chunks>,
     callsites_writer: Mutex<ChunkedCallsitesWriter<fs::File>>,
-    chunk_buffers: Mutex<Vec<ChunkBuffer>>,
     notifiers: Mutex<Vec<ChunkWriteNotifier>>,
+}
+
+#[derive(Debug, Default)]
+struct Chunks {
+    written_chunks: VecDeque<WrittenChunk>,
+    chunk_buffers: Vec<ChunkBuffer>,
+}
+
+/// Configuration for how many chunks to keep when performing cleanup.
+///
+/// A recording can take up a lot of space on hard disk and for longer running, it is usually
+/// necessary to remove older chunks. The chunked recording format is designed for this.
+///
+/// This configuration determines which older chunks are cleaned up.
+///
+/// The configuration specifies soft and hard limits for the maximum number of chunks and maximum
+/// total chunk size (in bytes). There is also a minimum number of chunks and minimum size.
+///
+/// The rules work in the following way:
+/// - Chunks will be kept up to the soft maximum limits (max chunks and max size)
+/// - If the minimum limits have not been reached, then the soft maximum limits will be breached
+/// - The hard maximum limits will not be breached.
+///
+/// For example, consider the following configuration:
+///
+/// ```
+/// use rfr::chunked::StorageQuota;
+///
+/// let quota = StorageQuota {
+///     min_chunks: Some(300),
+///     min_bytes: None,
+///
+///     max_chunks_soft: Some(900),
+///     max_bytes_soft: Some(100 * 1024 * 1024),
+///
+///     max_chunks_hard: None,
+///     max_bytes_hard: Some(200 * 1024 * 1024),
+/// };
+/// # _ = quota;
+/// ```
+///
+/// Chunks will be cleaned up if there are either more than 900 chunks or their combined disk usage
+/// is over 100 MiB. However, if there are fewer than 300 chunks, then they won't be cleaned up,
+/// even if they occupy over 100 MiB. This will apply up to the hard size limit of 200 MiB, at
+/// which point chunks will be cleaned up, even if there are fewer than 300.
+#[derive(Debug, Default)]
+pub struct StorageQuota {
+    pub min_chunks: Option<usize>,
+    pub min_bytes: Option<usize>,
+
+    pub max_chunks_soft: Option<usize>,
+    pub max_bytes_soft: Option<usize>,
+
+    pub max_chunks_hard: Option<usize>,
+    pub max_bytes_hard: Option<usize>,
+}
+
+impl StorageQuota {
+    /// Whether the provided number of chunks and total size in bytes above any hard limits
+    ///
+    /// If no limit is set, then any value will NOT be considered above the limit.
+    fn is_above_any_hard_max(&self, chunks: usize, total_size_bytes: usize) -> bool {
+        self.max_chunks_hard
+            .map(|max| chunks > max)
+            .unwrap_or(false)
+            || self
+                .max_bytes_hard
+                .map(|max| total_size_bytes > max)
+                .unwrap_or(false)
+    }
+
+    /// Whether the provided number of chunks and total size in bytes above any soft limits
+    ///
+    /// If no limit is set, then any value will NOT be considered above the limit.
+    fn is_above_any_soft_max(&self, chunks: usize, total_size_bytes: usize) -> bool {
+        self.max_chunks_soft
+            .map(|max| chunks > max)
+            .unwrap_or(false)
+            || self
+                .max_bytes_soft
+                .map(|max| total_size_bytes > max)
+                .unwrap_or(false)
+    }
+
+    /// Whether the provided number of chunks and total size in bytes are both above the minimum
+    /// limit.
+    ///
+    /// If no limit is set, then the minimum limit will be considered to be zero and any value will
+    /// be considered to be above the limit.
+    fn is_above_all_min(&self, chunks: usize, total_size_bytes: usize) -> bool {
+        Some(chunks) > self.min_chunks && Some(total_size_bytes) > self.min_bytes
+    }
+}
+
+#[derive(Debug)]
+struct WrittenChunk {
+    path: PathBuf,
+    size_bytes: usize,
 }
 
 impl ChunkedWriter {
     pub fn try_new<P>(root_dir: P) -> Result<Self, NewChunkedWriterError>
+    where
+        P: AsRef<Path>,
+    {
+        Self::try_new_with_config(root_dir, Default::default())
+    }
+
+    pub fn try_new_with_config<P>(
+        root_dir: P,
+        storage_quota: StorageQuota,
+    ) -> Result<Self, NewChunkedWriterError>
     where
         P: AsRef<Path>,
     {
@@ -65,9 +177,10 @@ impl ChunkedWriter {
             root_dir: root_dir.to_owned(),
             base_time,
             chunk_period_micros,
+            chunks: Mutex::new(Default::default()),
+            storage_quota,
             closed: false.into(),
             callsites_writer: Mutex::new(callsites_writer),
-            chunk_buffers: Mutex::new(Vec::new()),
             notifiers: Mutex::new(Vec::new()),
         };
 
@@ -128,7 +241,8 @@ impl ChunkedWriter {
             .join(format!("{}", ts_utc.strftime("%d-%H")))
     }
 
-    fn chunk_path(&self, time: &AbsTimestampSecs) -> PathBuf {
+    fn chunk_path(&self, chunk: &ChunkBuffer) -> PathBuf {
+        let time = &chunk.header.interval.base_time;
         let ts = Timestamp::from_second(time.secs as i64).unwrap();
         let ts_utc = ts.to_zoned(TimeZone::UTC);
 
@@ -181,8 +295,9 @@ impl ChunkedWriter {
     }
 
     fn create_seq_chunk_buffer(&self, interval: ChunkInterval) -> Arc<SeqChunkBuffer> {
-        let mut chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
-        let chunk_buffer = chunk_buffers
+        let mut chunks = self.chunks.lock().expect("poisoned");
+        let chunk_buffer = chunks
+            .chunk_buffers
             .iter_mut()
             .find(|cb| cb.header.interval == interval);
         match chunk_buffer {
@@ -190,7 +305,7 @@ impl ChunkedWriter {
             None => {
                 let mut new_chunk_buffer = ChunkBuffer::new(interval.clone());
                 let seq_chunk_buffer = new_chunk_buffer.new_seq_chunk_buffer();
-                chunk_buffers.push(new_chunk_buffer);
+                chunks.chunk_buffers.push(new_chunk_buffer);
                 seq_chunk_buffer
             }
         }
@@ -205,13 +320,13 @@ impl ChunkedWriter {
     /// Once each chunk is written to disk, it is discarded.
     ///
     /// This method is still not race-condition safe, despite the buffer. If a thread is taking a
-    /// very long time to prepare an even before calling [`with_seq_chunk_buffer`], then a record
+    /// very long time to prepare an event before calling [`with_seq_chunk_buffer`], then a record
     /// may get lost.
     ///
     /// For this reason, [`with_seq_chunk_buffer`] should be called with a timestamp that is close
     /// to the current time.
     pub fn write_completed_chunks(&self) -> Result<Duration, WriteChunksError> {
-        let mut chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
+        let mut chunks = self.chunks.lock().expect("poisoned");
         let write_time_buffer = Duration::from_millis(150);
         // Tell the caller to check back an extra 50 milliseconds after we would be ready to write
         // the next interval.
@@ -219,15 +334,19 @@ impl ChunkedWriter {
 
         self.flush_callsites();
 
-        chunk_buffers.retain(|chunk_buffer| {
+        let mut written_chunks: VecDeque<WrittenChunk> = VecDeque::new();
+
+        chunks.chunk_buffers.retain(|chunk_buffer| {
             let end_time = chunk_buffer.header.interval.abs_end_time();
             let since_completion = AbsTimestamp::now()
                 .as_duration_since_epoch()
                 .saturating_sub(end_time.as_duration_since_epoch());
+
             if since_completion > write_time_buffer {
-                let writer = self.writer_for_chunk(chunk_buffer);
+                let mut writer = self.writer_for_chunk(chunk_buffer);
                 // TODO(hds): Check for errors
-                chunk_buffer.write(writer);
+                chunk_buffer.write(&mut writer);
+                written_chunks.push_front(writer.into());
 
                 self.notifiers
                     .lock()
@@ -243,6 +362,16 @@ impl ChunkedWriter {
                 true
             }
         });
+
+        // TODO(hds): We will end up in an inconsistent state if this thread panics between
+        // removing chunk bufferes and adding written chunks. Ideally, we need to make sure that
+        // nothing will panic here.
+        //
+        // On the other hand, if the lock around chunks **is** poisoned then we will panic next
+        // time we try to access it, so the inconsistent state won't be externally visible.
+        for written_chunk in written_chunks {
+            chunks.written_chunks.push_front(written_chunk);
+        }
 
         // TODO(hds): Flush the callsites again afterwards to ensure consistency?
 
@@ -264,12 +393,19 @@ impl ChunkedWriter {
         // Flush the callsites first
         self.flush_callsites();
 
-        let chunk_buffers = self.chunk_buffers.lock().expect("poisoned");
+        let mut chunks = self.chunks.lock().expect("poisoned");
+        let mut written_chunks: VecDeque<WrittenChunk> = VecDeque::new();
 
-        chunk_buffers.iter().for_each(|chunk_buffer| {
-            let writer = self.writer_for_chunk(chunk_buffer);
-            chunk_buffer.write(writer);
+        chunks.chunk_buffers.iter().for_each(|chunk_buffer| {
+            let mut writer = self.writer_for_chunk(chunk_buffer);
+            chunk_buffer.write(&mut writer);
+            written_chunks.push_back(writer.into());
         });
+
+        // TODO(hds): see note in `write_completed_chunks` regarding inconsistent states.
+        for written_chunk in written_chunks {
+            chunks.written_chunks.push_front(written_chunk);
+        }
 
         // TODO(hds): Flush the callsites again afterwards to ensure consistency?
     }
@@ -295,8 +431,11 @@ impl ChunkedWriter {
         }
     }
 
-    fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> impl io::Write {
-        fs::File::create(self.chunk_path(&chunk.header.interval.base_time)).unwrap()
+    fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> ChunkWriter {
+        let path = self.chunk_path(chunk);
+        let file = fs::File::create(&path).unwrap();
+
+        ChunkWriter { file, path, len: 0 }
     }
 
     fn flush_callsites(&self) {
@@ -307,6 +446,86 @@ impl ChunkedWriter {
 
         if let Err(flush_error) = callsites_writer.flush() {
             eprintln!("Failed to flush callsites. Recording may be inconsistent: {flush_error}");
+        }
+    }
+
+    pub fn clean_outdated_chunks(&self) -> Result<(), CleanChunksError> {
+        let mut chunks_to_keep = 0;
+        let mut total_size = 0;
+
+        let mut chunks = self.chunks.lock().expect("poisoned");
+
+        // First we iterate through written chunks in order newest to oldest until we go over the
+        // keep quota.
+        for written_chunk in &chunks.written_chunks {
+            total_size += written_chunk.size_bytes;
+            let chunk_count = chunks_to_keep + 1;
+
+            if self
+                .storage_quota
+                .is_above_any_hard_max(chunk_count, total_size)
+                || (self
+                    .storage_quota
+                    .is_above_any_soft_max(chunk_count, total_size)
+                    && self.storage_quota.is_above_all_min(chunk_count, total_size))
+            {
+                break;
+            }
+
+            chunks_to_keep = chunk_count;
+        }
+
+        // Now we know how many chunks to keep, we pop off chunks from the oldest end until we only
+        // have that many left.
+        let chunks_to_delete = chunks.written_chunks.len() - chunks_to_keep;
+        while chunks.written_chunks.len() > chunks_to_keep {
+            let Some(written_chunk) = chunks.written_chunks.pop_back() else {
+                // We have somehow runout of written chunks, break from the loop.
+                break;
+            };
+
+            fs::remove_file(&written_chunk.path).map_err(|io_err| {
+                CleanChunksError::RemoveChunkFailed {
+                    chunk_path: written_chunk.path,
+                    chunks_to_delete,
+                    chunks_deleted: chunks_to_delete
+                        - (chunks.written_chunks.len() - chunks_to_keep),
+                    inner: io_err,
+                }
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
+struct ChunkWriter {
+    file: fs::File,
+    path: PathBuf,
+    len: usize,
+}
+
+impl io::Write for &mut ChunkWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.file.write(buf) {
+            Ok(len) => {
+                self.len += len;
+                Ok(len)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl From<ChunkWriter> for WrittenChunk {
+    fn from(writer: ChunkWriter) -> Self {
+        WrittenChunk {
+            path: writer.path,
+            size_bytes: writer.len,
         }
     }
 }
@@ -494,6 +713,42 @@ impl error::Error for WriteError {}
 pub enum WriteChunksError {
     FileOpenFailed,
 }
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum CleanChunksError {
+    Unknown,
+    RemoveChunkFailed {
+        chunk_path: PathBuf,
+        chunks_to_delete: usize,
+        chunks_deleted: usize,
+        inner: io::Error,
+    },
+}
+
+impl fmt::Display for CleanChunksError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CleanChunksError::Unknown => write!(f, "{self:?}"),
+            CleanChunksError::RemoveChunkFailed {
+                chunk_path,
+                chunks_to_delete,
+                chunks_deleted,
+                inner,
+            } => {
+                write!(
+                    f,
+                    "Failed to delete chunk at path: {chunk_path} \
+                    (chunks deleted: {chunks_deleted}, chunks to delete: {chunks_to_delete}): \
+                    {inner}",
+                    chunk_path = chunk_path.as_path().to_string_lossy(),
+                )
+            }
+        }
+    }
+}
+
+impl error::Error for CleanChunksError {}
 
 #[derive(Debug)]
 pub struct ChunkBuffer {

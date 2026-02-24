@@ -14,7 +14,9 @@ pub use meta::{ChunkedMeta, ChunkedMetaHeader, MetaTryFromIoError};
 pub use read::{Recording, from_path};
 pub use record::{Meta, Record, RecordData};
 pub use sequence::{SeqChunk, SeqChunkBuffer, SeqChunkHeader, SeqId};
-pub use write::{ChunkedWriter, NewChunkedWriterError, WaitForWriteError, WriteError};
+pub use write::{
+    ChunkedWriter, NewChunkedWriterError, StorageQuota, WaitForWriteError, WriteError,
+};
 
 fn current_software_version() -> FormatIdentifier {
     FormatIdentifier {
