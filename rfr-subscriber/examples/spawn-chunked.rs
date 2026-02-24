@@ -1,10 +1,10 @@
 use std::{future::Future, time::Duration};
 
-use rfr_subscriber::RfrChunkedLayer;
+use rfr_subscriber::ChunkedLayer;
 use tracing_subscriber::prelude::*;
 
 fn main() {
-    let rfr_layer = RfrChunkedLayer::new("./chunked-spawn.rfr");
+    let rfr_layer = ChunkedLayer::new("./chunked-spawn.rfr");
     let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 

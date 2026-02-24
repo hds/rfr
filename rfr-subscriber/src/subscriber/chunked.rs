@@ -1,9 +1,8 @@
 use std::{
     collections::HashMap,
-    error, fmt,
+    error, fmt, io, process,
     sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-    time::Duration,
+    thread, time,
 };
 
 use tracing::{Event, Metadata, Subscriber, span, subscriber::Interest};
@@ -14,6 +13,8 @@ use rfr::{
     chunked::{self, ChunkedWriter},
 };
 
+pub use rfr::chunked::StorageQuota;
+
 use crate::subscriber::common::{
     EventKind, SpanKind, SpawnFields, SpawnSpan, TaskId, TaskKind, TraceKind, WakerFields, WakerOp,
     get_context_task_iid, to_callsite, to_callsite_id, to_iid,
@@ -21,9 +22,13 @@ use crate::subscriber::common::{
 
 struct WriterHandle {
     writer: Arc<ChunkedWriter>,
-    join_handle: Mutex<Option<JoinHandle<()>>>,
+    // TODO(hds): Is there actually ever a case where we need this? It feels wrong to throw away
+    // the join handle...
+    #[expect(unused)]
+    join_handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
+/// A flusher which can wait until the last written traces have be written to out before returning.
 pub struct Flusher {
     writer: Arc<ChunkedWriter>,
 }
@@ -36,7 +41,7 @@ impl Flusher {
     /// before returning.
     pub fn wait_flush(&self) -> Result<(), FlushError> {
         self.writer
-            .wait_for_write_timeout(Duration::from_micros(
+            .wait_for_write_timeout(time::Duration::from_micros(
                 self.writer.chunk_period_micros() as u64 * 2,
             ))
             .map_err(|inner| FlushError { inner })
@@ -57,59 +62,150 @@ impl fmt::Display for FlushError {
 
 impl error::Error for FlushError {}
 
-pub struct RfrChunkedLayer {
+/// A builder for the [`ChunkedLayer`].
+#[derive(Debug, Default)]
+pub struct ChunkedLayerBuilder {
+    recording_dir: Option<String>,
+    storage_quota: Option<StorageQuota>,
+}
+
+impl ChunkedLayerBuilder {
+    /// Set the base directory for the chunked recording.
+    ///
+    /// This is typically a directory with a `.rfr` extension.
+    ///
+    /// The default value is `{pid}.rfr` where `pid` is the current process's ID (PID).
+    pub fn recording_dir(self, base_dir: String) -> Self {
+        Self {
+            recording_dir: Some(base_dir),
+            ..self
+        }
+    }
+
+    /// Sets the storage quota for the chunked recording.
+    ///
+    /// If this value is not specified, the [`ChunkedWriter`] will determine the quota.
+    pub fn storage_quota(self, storage_quota: StorageQuota) -> Self {
+        Self {
+            storage_quota: Some(storage_quota),
+            ..self
+        }
+    }
+
+    /// Consumes the builder and returns an instantiated and running [`ChunkedLayer`] or an error
+    /// if the layer could not be constructed.
+    pub fn build(self) -> Result<ChunkedLayer, ChunkedLayerBuildError> {
+        let base_dir = self
+            .recording_dir
+            .unwrap_or_else(|| format!("./{pid}.rfr", pid = process::id()));
+
+        let writer = match self.storage_quota {
+            Some(storage_quota) => ChunkedWriter::try_new_with_config(base_dir, storage_quota),
+            None => ChunkedWriter::try_new(base_dir),
+        }
+        .map_err(|err| ChunkedLayerBuildError::NewChunkedWriterFailed { inner: err })?;
+
+        ChunkedLayer::new_with_writer(writer)
+            .map_err(|inner| ChunkedLayerBuildError::SpawnWriterThreadFailed { inner })
+    }
+}
+
+#[derive(Debug)]
+/// An error returned when a [`ChunkedLayer]` cannot be built.
+pub enum ChunkedLayerBuildError {
+    /// The [`ChunkedWriter`] could not be created.
+    NewChunkedWriterFailed {
+        inner: chunked::NewChunkedWriterError,
+    },
+    /// The writer thread which handles writing out recording chunks could not be spawned.
+    SpawnWriterThreadFailed { inner: io::Error },
+}
+
+impl fmt::Display for ChunkedLayerBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChunkedLayerBuildError::NewChunkedWriterFailed { inner } => write!(
+                f,
+                "Chunked layer could not be built because a new chunked writer could not be created: {inner}"
+            ),
+            ChunkedLayerBuildError::SpawnWriterThreadFailed { inner } => write!(
+                f,
+                "Chunked layer could not be built because the chunk writer thread could not be spawned: {inner}"
+            ),
+        }
+    }
+}
+
+impl error::Error for ChunkedLayerBuildError {}
+
+/// A [`tracing`] layer that will write a chunked flight recording.
+///
+/// This layer can be used with a [`Registry`] to provide a tracing subscriber. The layer will
+/// spawn a separate thread to handle writing out chunks of an [`rfr`] chunked recording.
+///
+/// [`Registry`]: struct@tracing_subscriber::registry::Registry
+pub struct ChunkedLayer {
     writer_handle: WriterHandle,
     callsite_cache: Mutex<HashMap<CallsiteId, (Callsite, TraceKind)>>,
     object_cache: Mutex<HashMap<InstrumentationId, chunked::Object>>,
 }
 
-impl RfrChunkedLayer {
-    pub fn new(base_dir: &str) -> Self {
-        let writer_handle = Self::spawn_writer(base_dir.to_owned());
+impl ChunkedLayer {
+    /// Returns a [`ChunkedLayerBuilder`] which can be used to configure the chunked layer.
+    pub fn builder() -> ChunkedLayerBuilder {
+        Default::default()
+    }
 
-        Self {
+    /// Creates a new chunked layer with the given recording directory.
+    ///
+    /// This method may be deprecated in the future, instead [`builder`] should be used to
+    /// construct the chunked layer via the builder.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if the chunked writer could not be created or if the writer thread
+    /// could not be spawned.
+    pub fn new(base_dir: &str) -> Self {
+        let writer = ChunkedWriter::try_new(base_dir).expect("new writer failed");
+        Self::new_with_writer(writer).expect("spawn writer thread failed")
+    }
+
+    fn new_with_writer(writer: ChunkedWriter) -> Result<Self, io::Error> {
+        let writer_handle = Self::spawn_writer(writer)?;
+
+        Ok(Self {
             writer_handle,
             callsite_cache: Default::default(),
             object_cache: Default::default(),
-        }
+        })
     }
 
-    fn spawn_writer(base_dir: String) -> WriterHandle {
-        let writer = Arc::new(ChunkedWriter::try_new(base_dir).unwrap());
-
+    fn spawn_writer(writer: ChunkedWriter) -> Result<WriterHandle, io::Error> {
+        let writer = Arc::new(writer);
         let thread_writer = Arc::clone(&writer);
         let join_handle = thread::Builder::new()
             .name("rfr-writer".to_owned())
-            .spawn(move || run_writer_loop(thread_writer))
-            .unwrap();
+            .spawn(move || run_writer_loop(thread_writer))?;
 
-        WriterHandle {
+        Ok(WriterHandle {
             writer,
             join_handle: Mutex::new(Some(join_handle)),
-        }
+        })
     }
 
+    /// Returns the flusher for this layer.
+    ///
+    /// The [`Flusher`] can be used to wait for the last written traces to be written out to the
+    /// recording.
     pub fn flusher(&self) -> Flusher {
         Flusher {
             writer: Arc::clone(&self.writer_handle.writer),
         }
     }
+}
 
-    pub fn complete(&self) {
-        let join_handle = {
-            let mut guard = self.writer_handle.join_handle.lock().expect("poisoned");
-            guard.take()
-        };
-        if let Some(join_handle) = join_handle {
-            // TODO(hds): signal writer thread to stop
-            join_handle.join().unwrap();
-
-            self.writer_handle.writer.write_all_chunks();
-        } else {
-            // Otherwise some other thread has joined on the writer.
-        }
-    }
-
+/// Support methods for the Layer impl.
+impl ChunkedLayer {
     fn new_object(&self, iid: InstrumentationId, object: chunked::Object) {
         let mut object_cache = self.object_cache.lock().expect("object cache poisoned");
         object_cache.insert(iid, object);
@@ -152,11 +248,19 @@ fn run_writer_loop(writer: Arc<ChunkedWriter>) {
             // Error occurred, break.
             break;
         };
+        let sleep_until = time::Instant::now() + sleep_duration;
+        if let Err(err) = writer.clean_outdated_chunks() {
+            // TODO(hds): should we optionally log an error somehow?
+            _ = err;
+        }
+        // We recalculate the sleep duration here in case `clean_outdated_chunks` took some
+        // significant amount of time.
+        let sleep_duration = sleep_until.saturating_duration_since(time::Instant::now());
         thread::sleep(sleep_duration);
     }
 }
 
-impl<S> Layer<S> for RfrChunkedLayer
+impl<S> Layer<S> for ChunkedLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {

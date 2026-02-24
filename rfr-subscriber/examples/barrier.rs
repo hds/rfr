@@ -3,10 +3,10 @@ use std::{future::Future, sync::Arc, time::Duration};
 use tokio::sync::Barrier;
 use tracing_subscriber::prelude::*;
 
-use rfr_subscriber::RfrChunkedLayer;
+use rfr_subscriber::ChunkedLayer;
 
 fn main() {
-    let rfr_layer = RfrChunkedLayer::new("./chunked-barrier.rfr");
+    let rfr_layer = ChunkedLayer::new("./chunked-barrier.rfr");
     let flusher = rfr_layer.flusher();
     tracing_subscriber::registry().with(rfr_layer).init();
 
