@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{AbsTimestamp, FormatIdentifier, FormatVariant, Span, Task};
@@ -171,6 +173,29 @@ pub struct ChunkInterval {
     base_time: AbsTimestampSecs,
     start_time: ChunkTimestamp,
     end_time: ChunkTimestamp,
+}
+
+impl fmt::Display for ChunkInterval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let start_base = self.base_time.secs + self.start_time.micros / 1_000_000;
+        let start_micros = self.start_time.micros % 1_000_000;
+        let end_base = self.base_time.secs + self.end_time.micros / 1_000_000;
+        let end_micros = self.end_time.micros % 1_000_000;
+        write!(
+            f,
+            "({start_base}.{start_fraction} -> {end_base}.{end_fraction})",
+            start_fraction = if start_micros == 0 {
+                "0".to_string()
+            } else {
+                format!("{start_micros:06}")
+            },
+            end_fraction = if end_micros == 0 && start_micros == 0 {
+                "0".to_string()
+            } else {
+                format!("{end_micros:06}")
+            },
+        )
+    }
 }
 
 impl ChunkInterval {

@@ -19,10 +19,12 @@ fn round_trip() {
         },
         data: RecordData::TaskNew { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(record.clone(), |_task_ids| {
-        vec![Some(Object::Task(task.clone()))]
-    });
-    seq_chunk_buffer.write(&mut buffer);
+    seq_chunk_buffer
+        .append_record(record.clone(), |_task_ids| {
+            vec![Some(Object::Task(task.clone()))]
+        })
+        .unwrap();
+    seq_chunk_buffer.write(&mut buffer).unwrap();
 
     assert!(!buffer.is_empty());
 
@@ -58,7 +60,9 @@ fn skip_records_with_unknown_objects() {
             iid: InstrumentationId::from(5),
         },
     };
-    seq_chunk_buffer.append_record(record.clone(), |_task_ids| vec![None]);
+    seq_chunk_buffer
+        .append_record(record.clone(), |_task_ids| vec![None])
+        .unwrap_err();
 
     assert_eq!(seq_chunk_buffer.record_count(), 0);
 }
@@ -79,12 +83,14 @@ fn only_requests_object_once() {
         },
         data: RecordData::TaskNew { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(record_1, |task_ids| {
-        assert_eq!(task_ids.len(), 1);
-        assert_eq!(task_ids[0], InstrumentationId::from(2));
+    seq_chunk_buffer
+        .append_record(record_1, |task_ids| {
+            assert_eq!(task_ids.len(), 1);
+            assert_eq!(task_ids[0], InstrumentationId::from(2));
 
-        vec![Some(Object::Task(task.clone()))]
-    });
+            vec![Some(Object::Task(task.clone()))]
+        })
+        .unwrap();
 
     let record_2 = Record {
         meta: Meta {
@@ -92,13 +98,15 @@ fn only_requests_object_once() {
         },
         data: RecordData::TaskDrop { iid: task.iid },
     };
-    seq_chunk_buffer.append_record(record_2, |task_ids| {
-        assert!(task_ids.is_empty());
+    seq_chunk_buffer
+        .append_record(record_2, |task_ids| {
+            assert!(task_ids.is_empty());
 
-        vec![]
-    });
+            vec![]
+        })
+        .unwrap();
 
-    seq_chunk_buffer.write(&mut buffer);
+    seq_chunk_buffer.write(&mut buffer).unwrap();
 }
 
 fn test_task(iid: u64) -> Task {

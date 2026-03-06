@@ -10,7 +10,7 @@
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
-    io,
+    error, fmt, io,
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -155,19 +155,23 @@ impl SeqChunkBuffer {
     // FIXME(hds): modify to take an absolute timestamp and a record instead of a Record. Then this
     // function will convert the timestamp to a chunked timestamp and validate it at the same time.
     // If it is invalid, an error will be returned.
-    pub fn append_record<FnGetObjects>(&self, record: Record, get_objects: FnGetObjects)
+    pub fn append_record<FnGetObjects>(
+        &self,
+        record: Record,
+        get_objects: FnGetObjects,
+    ) -> Result<(), AppendRecordError>
     where
         FnGetObjects: FnOnce(&[InstrumentationId]) -> Vec<Option<Object>>,
     {
         let mut buffer = self.buffer.lock().expect("poisoned");
-        let mut missing_task_ids = Vec::new();
+        let mut missing_object_ids = Vec::new();
         match &record.data {
             RecordData::TaskNew { iid }
             | RecordData::TaskPollStart { iid }
             | RecordData::TaskPollEnd { iid }
             | RecordData::TaskDrop { iid } => {
                 if !buffer.objects.contains_key(iid) {
-                    missing_task_ids.push(*iid);
+                    missing_object_ids.push(*iid);
                 }
             }
             RecordData::WakerWake { waker }
@@ -175,13 +179,13 @@ impl SeqChunkBuffer {
             | RecordData::WakerClone { waker }
             | RecordData::WakerDrop { waker } => {
                 if !buffer.objects.contains_key(&waker.task_iid) {
-                    missing_task_ids.push(waker.task_iid);
+                    missing_object_ids.push(waker.task_iid);
                 }
                 if let Some(context_task_id) = &waker.context
                     && context_task_id != &waker.task_iid
                     && !buffer.objects.contains_key(context_task_id)
                 {
-                    missing_task_ids.push(*context_task_id);
+                    missing_object_ids.push(*context_task_id);
                 }
             }
             RecordData::SpanNew { iid }
@@ -198,20 +202,24 @@ impl SeqChunkBuffer {
         }
 
         // FIXME(hds): What if the 2 vecs are different sizes?
-        let missing_tasks = get_objects(missing_task_ids.as_slice());
-        for (task_id, task) in missing_task_ids.into_iter().zip(missing_tasks.into_iter()) {
-            match task {
-                Some(task) => {
-                    let task_buffer = postcard::to_stdvec(&task).unwrap();
-                    buffer.objects.insert(task_id, task_buffer);
+        let missing_objects = get_objects(missing_object_ids.as_slice());
+        for (iid, object) in missing_object_ids
+            .into_iter()
+            .zip(missing_objects.into_iter())
+        {
+            match object {
+                Some(object) => {
+                    let object_buffer =
+                        postcard::to_stdvec(&object).map_err(AppendRecordError::write_object)?;
+                    buffer.objects.insert(iid, object_buffer);
                 }
                 None => {
                     // TODO(hds): Currently we don't do anything with this information, should we?
                     //            Also, should we actually return early here or should we continue?
                     //            If we do want to return early, we should probably not write any
-                    //            task data to `buffer.objects`.
-                    buffer.missing_objects.insert(task_id);
-                    return;
+                    //            object data to `buffer.objects`.
+                    buffer.missing_objects.insert(iid);
+                    return Err(AppendRecordError::missing_object(iid));
                 }
             }
         }
@@ -220,22 +228,165 @@ impl SeqChunkBuffer {
             buffer.header.earliest_timestamp = record.meta.timestamp;
         }
         buffer.header.latest_timestamp = record.meta.timestamp;
-        postcard::to_io(&record, &mut buffer.records).unwrap();
+        postcard::to_io(&record, &mut buffer.records).map_err(AppendRecordError::write_record)?;
         buffer.record_count += 1;
+
+        Ok(())
     }
 
-    pub fn write(&self, writer: impl io::Write) {
+    pub fn write(&self, writer: impl io::Write) -> Result<(), SeqChunkWriteError> {
         let mut writer = writer;
-        let buffer = self.buffer.lock().expect("poisoned");
+        let buffer = self
+            .buffer
+            .lock()
+            .map_err(|_| SeqChunkWriteError::buffer_lock_poisoned())?;
 
-        postcard::to_io(&buffer.header, &mut writer).unwrap();
+        postcard::to_io(&buffer.header, &mut writer).map_err(SeqChunkWriteError::header)?;
 
-        postcard::to_io(&buffer.objects.len(), &mut writer).unwrap();
+        postcard::to_io(&buffer.objects.len(), &mut writer)
+            .map_err(SeqChunkWriteError::objects_length)?;
         for object_data in buffer.objects.values() {
-            writer.write_all(object_data.as_slice()).unwrap();
+            writer
+                .write_all(object_data.as_slice())
+                .map_err(SeqChunkWriteError::objects)?;
         }
 
-        postcard::to_io(&buffer.record_count, &mut writer).unwrap();
-        writer.write_all(buffer.records.as_slice()).unwrap();
+        postcard::to_io(&buffer.record_count, &mut writer)
+            .map_err(SeqChunkWriteError::records_length)?;
+        writer
+            .write_all(buffer.records.as_slice())
+            .map_err(SeqChunkWriteError::records)?;
+
+        Ok(())
     }
 }
+
+/// Error appending record to sequence chunk buffer
+#[derive(Debug)]
+pub struct AppendRecordError {
+    kind: AppendRecordErrorKind,
+}
+
+impl AppendRecordError {
+    fn missing_object(iid: InstrumentationId) -> Self {
+        Self {
+            kind: AppendRecordErrorKind::MissingObject { iid },
+        }
+    }
+
+    fn write_object(inner: postcard::Error) -> Self {
+        Self {
+            kind: AppendRecordErrorKind::WriteObject { inner },
+        }
+    }
+
+    fn write_record(inner: postcard::Error) -> Self {
+        Self {
+            kind: AppendRecordErrorKind::WriteRecord { inner },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum AppendRecordErrorKind {
+    MissingObject { iid: InstrumentationId },
+    WriteObject { inner: postcard::Error },
+    WriteRecord { inner: postcard::Error },
+}
+
+impl fmt::Display for AppendRecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (kind, inner) = match &self.kind {
+            AppendRecordErrorKind::MissingObject { iid } => {
+                return write!(
+                    f,
+                    "failed to append record, could not get object for iid={}",
+                    iid.as_u64()
+                );
+            }
+            AppendRecordErrorKind::WriteObject { inner } => ("object", inner),
+            AppendRecordErrorKind::WriteRecord { inner } => ("record", inner),
+        };
+
+        write!(f, "failed to append record, write {kind} failed: {inner}")
+    }
+}
+
+impl error::Error for AppendRecordError {}
+
+/// Error writing contents of a [`SeqChunkBuffer`] to a writer.
+#[derive(Debug)]
+pub struct SeqChunkWriteError {
+    kind: SeqChunkWriteErrorKind,
+}
+
+impl SeqChunkWriteError {
+    fn buffer_lock_poisoned() -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::BufferLockPoisoned,
+        }
+    }
+
+    fn header(inner: postcard::Error) -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::Header { inner },
+        }
+    }
+
+    fn objects_length(inner: postcard::Error) -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::ObjectsLength { inner },
+        }
+    }
+
+    fn objects(inner: io::Error) -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::Objects { inner },
+        }
+    }
+
+    fn records_length(inner: postcard::Error) -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::RecordsLength { inner },
+        }
+    }
+
+    fn records(inner: io::Error) -> Self {
+        Self {
+            kind: SeqChunkWriteErrorKind::Records { inner },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SeqChunkWriteErrorKind {
+    BufferLockPoisoned,
+    Header { inner: postcard::Error },
+    ObjectsLength { inner: postcard::Error },
+    Objects { inner: io::Error },
+    RecordsLength { inner: postcard::Error },
+    Records { inner: io::Error },
+}
+
+impl fmt::Display for SeqChunkWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (kind, inner) = match &self.kind {
+            SeqChunkWriteErrorKind::BufferLockPoisoned => {
+                return write!(f, "sequence chunk buffer lock is poisoned");
+            }
+            SeqChunkWriteErrorKind::Header { inner } => ("header", inner as &dyn fmt::Display),
+            SeqChunkWriteErrorKind::ObjectsLength { inner } => {
+                ("objects length", inner as &dyn fmt::Display)
+            }
+            SeqChunkWriteErrorKind::Objects { inner } => ("objects", inner as &dyn fmt::Display),
+            SeqChunkWriteErrorKind::RecordsLength { inner } => {
+                ("records length", inner as &dyn fmt::Display)
+            }
+            SeqChunkWriteErrorKind::Records { inner } => ("records", inner as &dyn fmt::Display),
+        };
+
+        write!(f, "failed to write sequence chunk `{kind}`: {inner}")
+    }
+}
+
+impl error::Error for SeqChunkWriteError {}
