@@ -20,6 +20,7 @@ use crate::subscriber::common::{
     get_context_task_iid, to_callsite, to_callsite_id, to_iid,
 };
 
+#[derive(Debug)]
 struct WriterHandle {
     writer: Arc<ChunkedWriter>,
     // TODO(hds): Is there actually ever a case where we need this? It feels wrong to throw away
@@ -144,6 +145,7 @@ impl error::Error for ChunkedLayerBuildError {}
 /// spawn a separate thread to handle writing out chunks of an [`rfr`] chunked recording.
 ///
 /// [`Registry`]: struct@tracing_subscriber::registry::Registry
+#[derive(Debug)]
 pub struct ChunkedLayer {
     writer_handle: WriterHandle,
     callsite_cache: Mutex<HashMap<CallsiteId, (Callsite, TraceKind)>>,
@@ -224,6 +226,7 @@ impl ChunkedLayer {
     }
 
     fn write_record(&self, timestamp: AbsTimestamp, data: chunked::RecordData) {
+        let mut append_result = Ok(());
         self.writer_handle
             .writer
             .with_seq_chunk_buffer(timestamp.clone(), |current_buffer| {
@@ -233,8 +236,15 @@ impl ChunkedLayer {
                     },
                     data,
                 };
-                current_buffer.append_record(record, |task_ids| self.get_objects(task_ids));
+                append_result =
+                    current_buffer.append_record(record, |task_ids| self.get_objects(task_ids));
             });
+
+        if let Err(err) = append_result {
+            // TODO(hds): Do something with this error? We don't want to fail, but maybe we can log
+            // it somehow
+            _ = err;
+        }
     }
 }
 

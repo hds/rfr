@@ -3,10 +3,7 @@ use std::{fs, sync::Arc, thread, time::Duration};
 use rfr::{
     AbsTimestamp, Callsite, CallsiteId, Event, FieldName, FieldValue, InstrumentationId, Kind,
     Level, Parent,
-    chunked::{
-        self, ChunkedWriter, Meta, NewChunkedWriterError, Record, RecordData, StorageQuota,
-        from_path,
-    },
+    chunked::{self, ChunkedWriter, Meta, Record, RecordData, StorageQuota, from_path},
 };
 use tempfile::tempdir;
 
@@ -26,10 +23,9 @@ fn spawn_writer_loop(writer: Arc<ChunkedWriter>) {
                     break;
                 }
 
-                let Ok(sleep_duration) = writer.write_completed_chunks() else {
-                    // Error occurred, break.
-                    break;
-                };
+                let sleep_duration = writer
+                    .write_completed_chunks()
+                    .expect("Writing completed chunks failed");
                 thread::sleep(sleep_duration);
             }
         })
@@ -75,7 +71,7 @@ fn record_single_event() {
             },
         };
 
-        buffer.append_record(record, no_objects);
+        buffer.append_record(record, no_objects).unwrap();
     });
 
     writer
@@ -118,12 +114,7 @@ fn directory_already_exists() {
         "expected `ChunkedWriter::try_new` to return an error"
     );
 
-    match result.unwrap_err() {
-        NewChunkedWriterError::AlreadyExists => {} // expected result
-        other_err => panic!(
-            "expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"
-        ),
-    }
+    result.unwrap_err();
 }
 
 #[test]
@@ -140,12 +131,7 @@ fn meta_already_exists() {
         "expected `ChunkedWriter::try_new` to return an error"
     );
 
-    match result.unwrap_err() {
-        NewChunkedWriterError::AlreadyExists => {} // expected result
-        other_err => panic!(
-            "expected error `NewChunkedWriterError::AlreadyExists`, but instead got `{other_err:?}`"
-        ),
-    }
+    result.unwrap_err();
 }
 
 fn write_event_chunk_loop(writer: &ChunkedWriter, repeats: u64) {
@@ -183,7 +169,7 @@ fn write_event_chunk_loop(writer: &ChunkedWriter, repeats: u64) {
                 },
             };
 
-            buffer.append_record(record, no_objects);
+            buffer.append_record(record, no_objects).unwrap();
         });
 
         let sleep_duration = writer.write_completed_chunks().unwrap();

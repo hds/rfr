@@ -8,13 +8,13 @@ use tracing::{
 };
 use tracing_subscriber::{layer::Context, registry::LookupSpan};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum TraceKind {
     Span(SpanKind),
     Event(EventKind),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum SpanKind {
     Spawn,
     Resource,
@@ -22,7 +22,7 @@ pub(super) enum SpanKind {
     AsyncOpPoll,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum EventKind {
     Waker,
     PollOp,

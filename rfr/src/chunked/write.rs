@@ -13,7 +13,8 @@ use std::{
 use jiff::{Timestamp, Zoned, tz::TimeZone};
 
 use crate::chunked::{
-    AbsTimestampSecs, ChunkedCallsitesWriter, ChunkedMeta, current_software_version,
+    AbsTimestampSecs, ChunkedCallsitesWriter, ChunkedMeta, SeqId, current_software_version,
+    sequence::SeqChunkWriteError,
 };
 use crate::{
     AbsTimestamp, Callsite,
@@ -159,17 +160,17 @@ impl ChunkedWriter {
         let meta = ChunkedMeta::new(vec![current_software_version()]);
 
         if let Ok(true) = root_dir.try_exists() {
-            return Err(NewChunkedWriterError::AlreadyExists);
+            return Err(NewChunkedWriterError::already_exists());
         }
 
-        fs::create_dir_all(root_dir).map_err(NewChunkedWriterError::CreateRecordingDirFailed)?;
+        fs::create_dir_all(root_dir).map_err(NewChunkedWriterError::create_recording_dir_failed)?;
         Self::write_meta(root_dir, &meta)?;
 
         let callsites_path = Path::new(&root_dir).join("callsites.rfr");
         let callsites_file = fs::File::create(callsites_path)
-            .map_err(|err| NewChunkedWriterError::WriteCallsitesFailed(WriteError::Io(err)))?;
+            .map_err(|err| NewChunkedWriterError::write_callsites_failed(WriteError::Io(err)))?;
         let callsites_writer = ChunkedCallsitesWriter::try_new(callsites_file)
-            .map_err(NewChunkedWriterError::WriteCallsitesFailed)?;
+            .map_err(NewChunkedWriterError::write_callsites_failed)?;
 
         // By default, chunks contain 1 second of execution time.
         let chunk_period_micros = 1_000_000;
@@ -185,7 +186,9 @@ impl ChunkedWriter {
         };
 
         let base_time = writer.base_time;
-        writer.ensure_dir(&base_time);
+        writer
+            .ensure_dir(&base_time)
+            .map_err(NewChunkedWriterError::create_recording_dir_failed)?;
 
         Ok(writer)
     }
@@ -225,14 +228,14 @@ impl ChunkedWriter {
         Ok(())
     }
 
-    fn ensure_dir(&self, time: &AbsTimestampSecs) {
-        fs::create_dir_all(self.dir_path(time)).unwrap();
+    fn ensure_dir(&self, time: &AbsTimestampSecs) -> Result<(), io::Error> {
+        fs::create_dir_all(self.dir_path(time)?)
     }
 
-    fn dir_path(&self, time: &AbsTimestampSecs) -> PathBuf {
-        let ts = Timestamp::from_second(time.secs as i64).unwrap();
+    fn dir_path(&self, time: &AbsTimestampSecs) -> Result<PathBuf, io::Error> {
+        let ts = Timestamp::from_second(time.secs as i64).map_err(io::Error::other)?;
         let ts_utc = ts.to_zoned(TimeZone::UTC);
-        self.dir_path_from_utc(&ts_utc)
+        Ok(self.dir_path_from_utc(&ts_utc))
     }
 
     fn dir_path_from_utc(&self, ts_utc: &Zoned) -> PathBuf {
@@ -241,13 +244,14 @@ impl ChunkedWriter {
             .join(format!("{}", ts_utc.strftime("%d-%H")))
     }
 
-    fn chunk_path(&self, chunk: &ChunkBuffer) -> PathBuf {
+    fn chunk_path(&self, chunk: &ChunkBuffer) -> Result<PathBuf, io::Error> {
         let time = &chunk.header.interval.base_time;
-        let ts = Timestamp::from_second(time.secs as i64).unwrap();
+        let ts = Timestamp::from_second(time.secs as i64).map_err(io::Error::other)?;
         let ts_utc = ts.to_zoned(TimeZone::UTC);
 
-        self.dir_path_from_utc(&ts_utc)
-            .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S")))
+        Ok(self
+            .dir_path_from_utc(&ts_utc)
+            .join(format!("chunk-{}.rfr", ts_utc.strftime("%M-%S"))))
     }
 
     pub fn register_callsite(&self, callsite: Callsite) {
@@ -336,16 +340,25 @@ impl ChunkedWriter {
 
         let mut written_chunks: VecDeque<WrittenChunk> = VecDeque::new();
 
-        chunks.chunk_buffers.retain(|chunk_buffer| {
+        let mut idx = 0;
+        let write_result = loop {
+            let Some(chunk_buffer) = chunks.chunk_buffers.get(idx) else {
+                break Ok(());
+            };
+
             let end_time = chunk_buffer.header.interval.abs_end_time();
             let since_completion = AbsTimestamp::now()
                 .as_duration_since_epoch()
                 .saturating_sub(end_time.as_duration_since_epoch());
 
             if since_completion > write_time_buffer {
-                let mut writer = self.writer_for_chunk(chunk_buffer);
-                // TODO(hds): Check for errors
-                chunk_buffer.write(&mut writer);
+                let mut writer = match self.writer_for_chunk(chunk_buffer) {
+                    Ok(writer) => writer,
+                    Err(err) => break Err(err),
+                };
+                chunk_buffer
+                    .write(&mut writer)
+                    .map_err(|inner| WriteChunksError::write(chunk_buffer, inner))?;
                 written_chunks.push_front(writer.into());
 
                 self.notifiers
@@ -357,11 +370,11 @@ impl ChunkedWriter {
                     });
 
                 // TODO(hds): Perhaps retain the completed sequence chunks to avoid allocating again?
-                false
+                chunks.chunk_buffers.remove(idx);
             } else {
-                true
+                idx += 1;
             }
-        });
+        };
 
         // TODO(hds): We will end up in an inconsistent state if this thread panics between
         // removing chunk bufferes and adding written chunks. Ideally, we need to make sure that
@@ -372,6 +385,9 @@ impl ChunkedWriter {
         for written_chunk in written_chunks {
             chunks.written_chunks.push_front(written_chunk);
         }
+
+        // Once written chunks has been updated, we can safely return early if there was an error.
+        write_result?;
 
         // TODO(hds): Flush the callsites again afterwards to ensure consistency?
 
@@ -389,25 +405,25 @@ impl ChunkedWriter {
     /// The chunks are not discarded after being written. If further records are written to the
     /// contained sequence chunks, then they can be written to disk at a later time with subsequent
     /// calls to [`write_completed_chunks`] or [`write_all_chunks`].
-    pub fn write_all_chunks(&self) {
+    ///
+    /// Note that chunks written in this way aren't considered for the purposes of the storage
+    /// quota when calling [`cleanup_outdated_chunks`].
+    pub fn write_all_chunks(&self) -> Result<(), WriteChunksError> {
         // Flush the callsites first
         self.flush_callsites();
 
-        let mut chunks = self.chunks.lock().expect("poisoned");
-        let mut written_chunks: VecDeque<WrittenChunk> = VecDeque::new();
+        let chunks = self.chunks.lock().expect("poisoned");
 
-        chunks.chunk_buffers.iter().for_each(|chunk_buffer| {
-            let mut writer = self.writer_for_chunk(chunk_buffer);
-            chunk_buffer.write(&mut writer);
-            written_chunks.push_back(writer.into());
-        });
-
-        // TODO(hds): see note in `write_completed_chunks` regarding inconsistent states.
-        for written_chunk in written_chunks {
-            chunks.written_chunks.push_front(written_chunk);
+        for chunk_buffer in &chunks.chunk_buffers {
+            let mut writer = self.writer_for_chunk(chunk_buffer)?;
+            chunk_buffer
+                .write(&mut writer)
+                .map_err(|inner| WriteChunksError::write(chunk_buffer, inner))?;
         }
 
         // TODO(hds): Flush the callsites again afterwards to ensure consistency?
+
+        Ok(())
     }
 
     /// Wait for the current active chunk to be written to disk.
@@ -431,11 +447,23 @@ impl ChunkedWriter {
         }
     }
 
-    fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> ChunkWriter {
-        let path = self.chunk_path(chunk);
-        let file = fs::File::create(&path).unwrap();
+    fn writer_for_chunk(&self, chunk: &ChunkBuffer) -> Result<ChunkWriter, WriteChunksError> {
+        let path = self
+            .chunk_path(chunk)
+            .map_err(|inner| WriteChunksError::chunk_path(chunk, inner))?;
+        let file = {
+            match fs::File::create(&path) {
+                Ok(file) => Ok(file),
+                Err(_err) => {
+                    self.ensure_dir(&chunk.header.interval.base_time)
+                        .map_err(|inner| WriteChunksError::chunk_dir(chunk, inner))?;
+                    fs::File::create(&path)
+                }
+            }
+            .map_err(|inner| WriteChunksError::file_open(chunk, inner))?
+        };
 
-        ChunkWriter { file, path, len: 0 }
+        Ok(ChunkWriter { file, path, len: 0 })
     }
 
     fn flush_callsites(&self) {
@@ -627,7 +655,38 @@ enum WaitForWrite {
 
 /// An error occuring when creating a new [`ChunkedWriter`].
 #[derive(Debug)]
-pub enum NewChunkedWriterError {
+pub struct NewChunkedWriterError {
+    kind: NewChunkedWriterErrorKind,
+}
+
+impl NewChunkedWriterError {
+    fn already_exists() -> Self {
+        Self {
+            kind: NewChunkedWriterErrorKind::AlreadyExists,
+        }
+    }
+
+    fn create_recording_dir_failed(inner: io::Error) -> Self {
+        Self {
+            kind: NewChunkedWriterErrorKind::CreateRecordingDirFailed(inner),
+        }
+    }
+
+    fn write_meta_failed(inner: WriteError) -> Self {
+        Self {
+            kind: NewChunkedWriterErrorKind::WriteMetaFailed(inner),
+        }
+    }
+
+    fn write_callsites_failed(inner: WriteError) -> Self {
+        Self {
+            kind: NewChunkedWriterErrorKind::WriteCallsitesFailed(inner),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NewChunkedWriterErrorKind {
     /// There is already a chunked recording at this location
     AlreadyExists,
     /// Could not create the directory for the chunked recording
@@ -640,13 +699,17 @@ pub enum NewChunkedWriterError {
 
 impl fmt::Display for NewChunkedWriterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AlreadyExists => write!(f, "a chunked recording already exists at this location"),
-            Self::CreateRecordingDirFailed(inner) => {
+        match &self.kind {
+            NewChunkedWriterErrorKind::AlreadyExists => {
+                write!(f, "a chunked recording already exists at this location")
+            }
+            NewChunkedWriterErrorKind::CreateRecordingDirFailed(inner) => {
                 write!(f, "parent directory could not be created: {inner}")
             }
-            Self::WriteMetaFailed(inner) => write!(f, "failed to write `meta.rfr`: {inner}"),
-            Self::WriteCallsitesFailed(inner) => {
+            NewChunkedWriterErrorKind::WriteMetaFailed(inner) => {
+                write!(f, "failed to write `meta.rfr`: {inner}")
+            }
+            NewChunkedWriterErrorKind::WriteCallsitesFailed(inner) => {
                 write!(f, "failed to write `callsites.rfr` file: {inner}")
             }
         }
@@ -657,8 +720,8 @@ impl error::Error for NewChunkedWriterError {}
 impl From<NewMetaError> for NewChunkedWriterError {
     fn from(value: NewMetaError) -> Self {
         match value {
-            NewMetaError::AlreadyExists => NewChunkedWriterError::AlreadyExists,
-            NewMetaError::WriteFailed(inner) => NewChunkedWriterError::WriteMetaFailed(inner),
+            NewMetaError::AlreadyExists => NewChunkedWriterError::already_exists(),
+            NewMetaError::WriteFailed(inner) => NewChunkedWriterError::write_meta_failed(inner),
         }
     }
 }
@@ -708,11 +771,74 @@ impl fmt::Display for WriteError {
 
 impl error::Error for WriteError {}
 
-#[non_exhaustive]
+// Error writing chunks out to storage
 #[derive(Debug)]
-pub enum WriteChunksError {
-    FileOpenFailed,
+pub struct WriteChunksError {
+    chunk_interval: ChunkInterval,
+    kind: WriteChunksErrorKind,
 }
+
+impl WriteChunksError {
+    fn chunk_path(chunk: &ChunkBuffer, inner: io::Error) -> Self {
+        Self {
+            chunk_interval: chunk.header.interval.clone(),
+            kind: WriteChunksErrorKind::ChunkPath { inner },
+        }
+    }
+
+    fn chunk_dir(chunk: &ChunkBuffer, inner: io::Error) -> Self {
+        Self {
+            chunk_interval: chunk.header.interval.clone(),
+            kind: WriteChunksErrorKind::ChunkDir { inner },
+        }
+    }
+
+    fn file_open(chunk: &ChunkBuffer, inner: io::Error) -> Self {
+        Self {
+            chunk_interval: chunk.header.interval.clone(),
+            kind: WriteChunksErrorKind::FileOpen { inner },
+        }
+    }
+
+    fn write(chunk: &ChunkBuffer, inner: ChunkWriteError) -> Self {
+        Self {
+            chunk_interval: chunk.header.interval.clone(),
+            kind: WriteChunksErrorKind::Write { inner },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum WriteChunksErrorKind {
+    ChunkPath { inner: io::Error },
+    ChunkDir { inner: io::Error },
+    FileOpen { inner: io::Error },
+    Write { inner: ChunkWriteError },
+}
+
+impl fmt::Display for WriteChunksError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let chunk_interval = &self.chunk_interval;
+        let (kind, inner) = match &self.kind {
+            WriteChunksErrorKind::ChunkPath { inner } => ("chunk path", inner),
+            WriteChunksErrorKind::ChunkDir { inner } => ("chunk dir", inner),
+            WriteChunksErrorKind::FileOpen { inner } => ("file open", inner),
+            WriteChunksErrorKind::Write { inner } => {
+                return write!(
+                    f,
+                    "failed to write serialized data to chunk `{chunk_interval}`: {inner}"
+                );
+            }
+        };
+
+        write!(
+            f,
+            "failed to write chunk `{chunk_interval}`, {kind}: {inner}"
+        )
+    }
+}
+
+impl error::Error for WriteChunksError {}
 
 #[non_exhaustive]
 #[derive(Debug)]
@@ -771,10 +897,11 @@ impl ChunkBuffer {
         seq_chunk_buffer
     }
 
-    fn write(&self, writer: impl io::Write) {
+    fn write(&self, writer: impl io::Write) -> Result<(), ChunkWriteError> {
         let mut writer = writer;
 
-        postcard::to_io(&current_software_version(), &mut writer).unwrap();
+        postcard::to_io(&current_software_version(), &mut writer)
+            .map_err(ChunkWriteError::identifier)?;
 
         let (earliest_timestamp, latest_timestamp) = self
             .seq_chunks
@@ -791,11 +918,86 @@ impl ChunkBuffer {
             earliest_timestamp,
             latest_timestamp,
         };
-        postcard::to_io(&header, &mut writer).unwrap();
+        postcard::to_io(&header, &mut writer).map_err(ChunkWriteError::header)?;
 
-        postcard::to_io(&self.seq_chunks.len(), &mut writer).unwrap();
+        postcard::to_io(&self.seq_chunks.len(), &mut writer)
+            .map_err(ChunkWriteError::seq_length)?;
         for seq_chunk in &self.seq_chunks {
-            seq_chunk.write(&mut writer);
+            seq_chunk
+                .write(&mut writer)
+                .map_err(|inner| ChunkWriteError::seq_chunk(seq_chunk.seq_id(), inner))?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Error writing a single chunk
+#[derive(Debug)]
+pub struct ChunkWriteError {
+    kind: ChunkWriteErrorKind,
+}
+
+impl ChunkWriteError {
+    fn identifier(inner: postcard::Error) -> Self {
+        Self {
+            kind: ChunkWriteErrorKind::Identifier { inner },
         }
     }
+
+    fn header(inner: postcard::Error) -> Self {
+        Self {
+            kind: ChunkWriteErrorKind::Header { inner },
+        }
+    }
+
+    fn seq_length(inner: postcard::Error) -> Self {
+        Self {
+            kind: ChunkWriteErrorKind::SeqLength { inner },
+        }
+    }
+
+    fn seq_chunk(seq_id: SeqId, inner: SeqChunkWriteError) -> Self {
+        Self {
+            kind: ChunkWriteErrorKind::SeqChunk { seq_id, inner },
+        }
+    }
+}
+
+impl fmt::Display for ChunkWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (kind, inner) = match &self.kind {
+            ChunkWriteErrorKind::SeqChunk { seq_id, inner } => {
+                return write!(
+                    f,
+                    "failed to write sequence chunk `{seq_id}`: {inner}",
+                    seq_id = seq_id.as_u64()
+                );
+            }
+            ChunkWriteErrorKind::Identifier { inner } => ("identifier", inner),
+            ChunkWriteErrorKind::Header { inner } => ("header", inner),
+            ChunkWriteErrorKind::SeqLength { inner } => ("sequence length", inner),
+        };
+
+        write!(f, "Failed to write chunk {kind}: {inner}")
+    }
+}
+
+impl error::Error for ChunkWriteError {}
+
+#[derive(Debug)]
+enum ChunkWriteErrorKind {
+    Identifier {
+        inner: postcard::Error,
+    },
+    Header {
+        inner: postcard::Error,
+    },
+    SeqLength {
+        inner: postcard::Error,
+    },
+    SeqChunk {
+        seq_id: SeqId,
+        inner: SeqChunkWriteError,
+    },
 }
